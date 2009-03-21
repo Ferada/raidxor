@@ -1,0 +1,13 @@
+<!-- -*- mode: markdown; -*- -->
+
+XOR-RAID
+========
+A metamodule for the md driver of the Linux kernel which supports
+variable de-/encoding using XOR equations.
+
+Ein Metamodul für den md-Treiber des Linux-Kernels das variable
+De-/Kodierung über XOR-Gleichungen unterstützt.
+
+Contributors
+------------
+- Olof-Joachim Frahm <Olof.Frahm@web.de>

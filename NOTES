@@ -1,0 +1,154 @@
+XOR-RAID
+========
+Ein Metamodul für den MD-Treiber des Linux-Kernels das variable
+De-/Kodierung über XOR-Gleichungen unterstützt.
+
+Plan
+----
+- Verstehen von `md.c`, `raid0.c`, `raid1.c` und `raid5.c`
+- Modul in `raidxor.c`
+- Implementierung Deviceerstellung
+- Implementierung Benutzerwerkzeuge
+  - Festlegung von Konfigurationsformat
+- Implementierung allgemeine XOR-Gleichungen (zuerst unabhängig vom
+  Kernelmodul)
+- Testfälle
+  - Normal Lesen/Schreiben
+  - Ausgefallene Platten / Fehlerfälle
+  - Konkurrierende Zugriffe
+- Implementierung Lesezugriff
+- Implementierung Schreibzugriff
+- Korrektheit
+- Performanceanalyse
+
+Sekundär:
+- Parallelisierung mit Kernelthreads
+
+Der `md`-Treiber
+----------------
+Der `md`-Treiber implementiert RAID-0,1,(4,5,6),10 in unterschiedlichen
+Modulen.  Die geklammerte Liste ist das Modul in der Datei `raid5.c`.
+
+Für RAID-6 existieren verschiedene Implementierungen abhängig von den
+Fähigkeiten des Prozessors (SIMD-Unterstützung wie MMX, SSE).
+
+- Was ist ein `path_selector`?
+- Wie funktioniert das `dm-log`? (Ist das überhaupt wichtig?)
+- Wo werden Fehler erkannt (und kategorisiert)?
+  - Funktion `error` in `raid1.c:980`
+
+RAID-1 ist als Startpunkt nützlich, dann RAID-0 und -(4,5,6).
+
+Der `md`-Treiber hat in u.a. in raid5.c Funktionen für Striping.
+- Wie funktioniert die?
+  - Wo ist die Parität? ops_complete_postxor, ops_run_compute5,
+    ops_complete_compute5
+
+Kernelthreading wird benutzt, Funktion `md_thread` in `md.c:4833`,
+`md_register_thread` in `md.c:4883`.  `md.c` definiert nur einen
+Synchronisationsthread `md_do_sync` in `md.c:5421`, `raid1.c`
+definiert einen Thread `raid1d` in `raid1.c:1504`, `raid5.c` definiert
+einen Thread `raid5d` in `raid5.c:3913`.
+
+> This is our raid5 kernel thread.
+>
+> We scan the hash table for stripes which can be handled now.
+> During the scan, completed stripes are saved for us by the interrupt
+> handler, so that they will not have to wait for our next wakeup.
+
+`raid0.c` hat keinen eigenen Thread.
+
+Code
+----
+- Dokumentation in welchem Format?
+- Quelltextdokumentation in speziellem Format?
+- Quelltextformatierung?
+
+Architektur
+-----------
+Einklinken in den `md`-Treiber ist möglich, die verschiedenen Module
+sind separat zuschaltbar (raid-1,5,6), also können wir auch ein
+raid-xor mit beliebigem Layout erstellen.
+
+Das Hinzufügen und Entfernen von Platten ist bei unserem System im
+laufenden System nicht möglich (?!), siehe Methoden `hot_disk_add` und
+`hot_disk_remove` von `mdk_personality`.
+
+- Können wir die `mdk_personality` des `raid5` Moduls
+  benutzen/abändern?  Das Level in der `mdk_personality`-Struktur
+  führt zur Auswahl unterschiedlicher Algorithmen und
+  Paritätsplatten.
+
+  Es scheint so zu sein, als ob das Abändern des Moduls in Hinsicht
+  auf die Verständlichkeit nicht zu empfehlen ist.  Demnach separates
+  Modul `raidxor.c` o.ä.
+
+  - Welche Funktionen wären unterschiedlich und müssten geändert
+    werden?
+
+- Wie wird die Konfiguration geladen?
+
+  Ratsam wäre das `sysfs`, da dort devicespezifische Daten gelagert
+  werden.
+
+  - Wie sieht das `sysfs` von `md` aus?
+  - Wie interagiert [`mdadm`][mdadm] mit dem `sysfs` / Kerneltreiber?
+  - Blockdevice, dementsprechend nach /sys/block/md/raid-xor?
+
+  [`Sysfs`][sysfs]:
+  > For device drivers and devices, attributes may be created. These are
+  > simple files; the rule is that they should only contain a single
+  > value and/or allow a single value to be set (unlike some files in
+  > procfs, which need to be heavily parsed). These files show up in the
+  > subdirectory of the device driver respective to the device. Using
+  > attribute groups, a subdirectory filled with attributes may also be
+  > created.
+
+  Also ein Attribut Kodierungsgleichungen, ein Attribut
+  Dekodierungsgleichungen, ...
+
+  - Eigentlich sollen Attribute ASCII kodiert sein - entweder die Regel
+    brechen, oder Parser innerhalb des Kernels.
+
+  - Was ist dann mit Schreibzugriff?
+  - Wie wird ein Device erstellt und wie gelöscht?
+
+  Ein Userspaceprogramm sollte die Vorverarbeitung der Daten tätigen,
+  die dann binär in den Kernel geschrieben werden.
+
+  Da die Gleichungen vergleichsweise groß sind, passen sie wohl nicht
+  in den Superblock, also kann von einem derart kodierten RAID nicht
+  gebootet werden (ist das überhaupt wichtig?).  Das heißt ohne
+  jedesmal die Gleichungen neu zu laden ist kein automatisches Laden
+  eines RAID-Verbundes möglich.
+
+  - Es könnte die Möglichkeit geben, bestimmte Kodierungen in den
+    Kernel zu kompilieren (separate Module?), die entsprechend
+    ausgewählt werden können.  Es könnte dann die Möglichkeit geben,
+    dieses Modul im Superblock zu referenzieren.
+
+- Wenn mehrere Devices erstellt werden können, wie wird das behandelt?
+
+  Da MD von selbst mehrere Devices unterstützt, muß der Treiber
+  sowieso dementsprechend entwickelt werden.
+
+- Zuordnung von Gleichungen/Einstellungen auf Devices?
+
+  Jedes Device hat eine eigene Menge von Gleichungen.  Wenn diese
+  Gleichungen als Modul geladen werden könnten, muß auf
+  Speicherfreigabe geachtet werden.
+
+- Parallele Bearbeitung?
+  - über Kernelthreads
+  - über SIMD
+
+  Locking muss sowieso gemacht werden, dementsprechend wären nur
+  andere De-/Kodierungsschemata zu wählen.
+
+[sysfs]: http://en.wikipedia.org/wiki/Sysfs
+[mdadm]: http://neil.brown.name/blog/mdadm
+
+[superblocks]: http://linux-raid.osdl.org/index.php/RAID_superblock_formats
+[raidsetup]: http://linux-raid.osdl.org/index.php/RAID_setup
+[linuxjournal]: http://www.linuxjournal.com/article/2391 "The Linux
+RAID-1, 4, 5 Code"
