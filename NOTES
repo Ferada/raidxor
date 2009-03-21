@@ -1,7 +1,4 @@
-XOR-RAID
-========
-Ein Metamodul für den MD-Treiber des Linux-Kernels das variable
-De-/Kodierung über XOR-Gleichungen unterstützt.
+<!-- -*- mode: markdown; -*- -->
 
 Plan
 ----
