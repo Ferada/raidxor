@@ -2,6 +2,9 @@
 
 Plan
 ----
+- raid{0,1,5}.c zusammenkürzen und ausdrucken
+  - welche Funktionen werden von md.c aufgerufen?
+
 - Verstehen von `md.c`, `raid0.c`, `raid1.c` und `raid5.c`
 - Modul in `raidxor.c`
 - Implementierung Deviceerstellung
