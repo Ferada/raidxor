@@ -104,5 +104,5 @@ module_exit( raidxor_exit );
 
 MODULE_AUTHOR("Olof-Joachim Frahm");
 MODULE_LICENSE("GPL");
-MODULE_SUPPORTED_DEVICE("none");
+MODULE_SUPPORTED_DEVICE("md");
 MODULE_DESCRIPTION("Raid module with parameterisation support for en- and decoding.");
