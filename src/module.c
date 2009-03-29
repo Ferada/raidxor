@@ -7,23 +7,58 @@
 
 static int raidxor_run(mddev_t *mddev)
 {
+	conf_t *conf;
 	struct list_head *tmp;
 	mdk_rdev_t* rdev;
-	int disks = 0;
-
-	printk("raidxor: run(%s) called.\n", mdname(mddev));
 
 	rdev_for_each(rdev, tmp, mddev) {
-		++disks;
+		/* nuthin' */
 	}
 
-	printk("%d disks in configuration.\n", disks);
+	if (mddev->level != LEVEL_XOR) {
+		printk(KERN_ERR "raidxor: %s: raid level not set to xor (%d)\n",
+		       mdname(mddev), mddev->level);
+		goto out_inval;
+	}
+
+
+	conf = kzalloc(sizeof(conf_t), GFP_KERNEL);
+	mddev->private = conf;
+	if (!conf)
+		goto out_no_mem;
+
+	conf->mddev = mddev;
+
+
+	printk(KERN_INFO "raidxor: raid set %s active with %d disks\n",
+	       mdname(mddev), mddev->raid_disks);
 
 	return 0;
+
+out_no_mem:
+	printk(KERN_ERR "raidxor: couldn't allocate memory for %s\n",
+	       mdname(mddev));
+
+out_free_conf:
+	if (conf) {
+		kfree(conf);
+		mddev->private = NULL;
+	}
+
+out:
+	return -EIO;
+
+out_inval:
+	return -EINVAL;
 }
 
 static int raidxor_stop(mddev_t *mddev)
 {
+	conf_t *conf = mddev_to_conf(mddev);
+
+	mddev->private = NULL;
+	kfree(conf);
+
 	return 0;
 }
 
