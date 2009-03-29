@@ -22,7 +22,7 @@ Plan
 - Performanceanalyse
 
 Sekundär:
-- Parallelisierung mit Kernelthreads
+- zusätzliche Parallelisierung mit Kernelthreads
 
 Der `md`-Treiber
 ----------------
@@ -88,8 +88,17 @@ laufenden System nicht möglich (?!), siehe Methoden `hot_disk_add` und
 
 - Wie wird die Konfiguration geladen?
 
+  Integration mit mdadm, da das Format schon etwas ähnlich ist?
+  Dementsprechend wäre auch das Anlegen und Öffnen von Raids
+  geregelt.
+
   Ratsam wäre das `sysfs`, da dort devicespezifische Daten gelagert
   werden.
+
+  `mdadm` lädt über `ioctl`s die Konfiguration und stößt anschließend
+  die `run`-Methode an; wir können ebenfalls ein eigenes `ioctl`
+  darüber legen, dafür müssen die `block_device_operations` für unsere
+  Devices überschrieben werden (`raidxor_ioctl` usw.).
 
   - Wie sieht das `sysfs` von `md` aus?
   - Wie interagiert [`mdadm`][mdadm] mit dem `sysfs` / Kerneltreiber?
