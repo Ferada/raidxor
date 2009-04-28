@@ -127,8 +127,6 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio) {
 	raidxor_bio *rxbio;
 	int i, j;
 
-	spin_lock_irqsave(&conf->device_lock, flags);
-
 	printk(KERN_INFO "raidxor: got request\n");
 
 	printk(KERN_INFO "raidxor: splitting from sector %llu, %llu bytes\n",
@@ -226,7 +224,6 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio) {
 	//bio_io_error(bio); // == bio_endio(bio, -EIO)
 
 out:
-	spin_unlock_irqrestore(&conf->device_lock, flags);
 	bio_io_error(bio);
 	return 0;
 }
