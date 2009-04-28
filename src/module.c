@@ -33,7 +33,7 @@ static int raidxor_run(mddev_t *mddev)
 		goto out_inval;
 
 	conf = kzalloc(sizeof(raidxor_conf_t) +
-		       sizeof(struct disk_info) * (mddev->raid_disks - 1), GFP_KERNEL);
+		       sizeof(struct disk_info) * mddev->raid_disks, GFP_KERNEL);
 	mddev->private = conf;
 	if (!conf)
 		goto out_no_mem;
@@ -93,20 +93,100 @@ static void raidxor_status(struct seq_file *seq, mddev_t *mddev)
 	return;
 }
 
+static void raidxor_end_read_request(struct bio *bio, int error)
+{
+	raidxor_bio *rxbio = (raidxor_bio *)(bio->bi_private);
+	raidxor_conf_t *conf = mddev_to_conf(rxbio->mddev);
+	int i;
+
+	if (atomic_dec_and_test(&rxbio->remaining)) {
+		bio_endio(rxbio->master_bio, 0);
+		/* TODO: create pool for this */
+		//mempool_free(rxbio, conf->rxbio_pool);
+		kfree(rxbio);
+	}
+
+	for (i = 0; i < bio->bi_vcnt; ++i)
+		safe_put_page(bio->bi_io_vec[i].bv_page);
+
+	bio_put(bio);
+}
+
 static int raidxor_make_request(struct request_queue *q, struct bio *bio) {
 	mddev_t *mddev = q->queuedata;
 	raidxor_conf_t *conf = mddev_to_conf(mddev);
 	const int rw = bio_data_dir(bio);
-	unsigned int stripe_size;
+	unsigned int npages, size;
+	struct bio *rbio;
+	struct page *page;
+	raidxor_bio *rxbio;
+	int i, j;
 
 	printk (KERN_INFO "raidxor: got request\n");
 	printk (KERN_INFO "raidxor: %llu bytes of I/O\n", (unsigned long long) bio->bi_size);
 
 	/* we don't handle read requests yet */
+	/* apparently, we do have to handle them ... */
 	if (rw == READ) {
-		printk (KERN_INFO "raidxor: FIXME: not handling read request\n");
-		bio_endio(bio, -EOPNOTSUPP);
+		printk (KERN_INFO "raidxor: handling read request\n");
+
+		/* TODO: create a pool for this */
+		//rxbio = mempool_alloc(conf->rxbio_pool, GFP_NOIO);
+		rxbio = kzalloc(sizeof(raidxor_bio) +
+				sizeof(struct bio *) * conf->n_data_disks, GFP_NOIO);
+		if (!rxbio)
+			goto out_free_rxbio;
+		rxbio->master_bio = bio;
+		rxbio->mddev = mddev;
+
+		/* reading at most one sector more then necessary on (each disk - 1) */
+		size = 512 * ((bio->bi_size / 512) / conf->n_data_disks
+			      + ((bio->bi_size / 512) % conf->n_data_disks) ? 1 : 0);
+		npages = size / PAGE_SIZE + (size % PAGE_SIZE) ? 1 : 0;
+
+		atomic_set(&rxbio->remaining, 0);
+
+		for (i = 0; i < conf->n_data_disks; ++i) {
+			rbio = bio_alloc(GFP_NOIO, npages);
+			if (!rbio)
+				goto out_free_bios;
+			rxbio->bios[i] = bio;
+
+			rbio->bi_rw = READ;
+			rbio->bi_private = rxbio;
+
+			rbio->bi_bdev = conf->disks[i].rdev->bdev;
+			rbio->bi_sector = bio->bi_sector / conf->n_data_disks;
+			rbio->bi_size = size;
+
+			rbio->bi_end_io = raidxor_end_read_request;
+
+			for (j = 0; j < npages; ++j) {
+				page = alloc_page(GFP_NOIO);
+				if (!page)
+					goto out_free_pages;
+				rbio->bi_io_vec[j].bv_page = page;
+			}
+		}
+
+		for (i = 0; i < conf->n_data_disks; ++i) {
+			atomic_inc(&rxbio->remaining);
+			generic_make_request(rxbio->bios[i]);
+		}
+
 		return 0;
+	out_free_pages:
+		for (i = 0; i < conf->n_data_disks; ++i)
+			for (j = 0; j < npages; ++j)
+				safe_put_page(rxbio->bios[i]->bi_io_vec[j].bv_page);
+	out_free_bios:
+		for (i = 0; i < conf->n_data_disks; ++i)
+			if (rxbio->bios[i])
+				bio_put(rxbio->bios[i]);
+	out_free_rxbio:
+		kfree(rxbio);
+
+		goto out;
 	}
 
 	/* only used for md driver housekeeping */
@@ -114,10 +194,10 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio) {
 
 	/* allocate enough memory for the transfers to each of the disks */
 	/* size = (bi_size / (512 * data_disks)) */
-	stripe_size = 512 * ((bio->bi_size / 512) / conf->n_data_disks
-			     + (bio->bi_size / 512) % conf->n_data_disks);
+	//stripe_size = 512 * ((bio->bi_size / 512) / conf->n_data_disks
+	//		     + (bio->bi_size / 512) % conf->n_data_disks);
 	
-	printk (KERN_INFO "raidxor: i want to allocate %u bytes for each drive\n", stripe_size);
+	//printk (KERN_INFO "raidxor: i want to allocate %u bytes for each drive\n", stripe_size);
 
 	/* calculate the stripes */
 	{
@@ -131,9 +211,22 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio) {
 
 	// stop this transfer and signal an error to upper level (not md, but blk_queue)
 	//bio_io_error(bio); // == bio_endio(bio, -EIO)
+
+out:
 	bio_io_error(bio);
 	return 0;
 }
+
+#if 0
+static void raidxord(mddev_t *mddev) {
+	raidxor_conf_t *conf = mddev_to_conf(mddev);
+	int unplug = 0;
+
+	for (;;) {
+		flush_pending_io(conf);
+	}
+}
+#endif
 
 static struct mdk_personality raidxor_personality =
 {
