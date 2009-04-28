@@ -21,8 +21,91 @@ Plan
 - Korrektheit
 - Performanceanalyse
 
+- Übertragung der Dekodierungsgleichungen über Userspacedaemon auf
+  Anfrage.
+- D.h. erstmal nur Kodierung und Dekodierung ohne Fehlerkorrektur.
+
 Sekundär:
 - zusätzliche Parallelisierung mit Kernelthreads
+
+
+XOR mit `xor_blocks` in `xor.h`.
+
+http://www.geocities.com/ravikiran_uvs/articles/blkdevarch.html
+
+Zur struct bio: http://lwn.net/Articles/26404/, vor allem bio_clone im
+letzten Absatz.  Auch http://lwn.net/Articles/27055/ und
+http://lwn.net/Articles/27361/:
+
+> If the make request function can arrange for the transfer(s) described
+> in the given bio, it should do so and return zero. "Stacking" drivers
+> can also redirect the bio by changing its bi_bdev field and returning
+> nonzero; in this case the bio will then be dispatched to the new
+> device's driver (this is as things were done in 2.4). 
+>
+> If the "make request" function performs the transfer itself, it is
+> responsible for passing the BIO to bio_endio() when the transfer is
+> complete. Note that the "make request" function is not called with the
+> queue lock held.
+
+Ein sector sind 512 Bytes, also genau die Größe, die wir hier
+verwenden werden.
+
+<!--
+Wie groß sind die bio_vec Blöcke?  Kann man sie auf Blockgröße (512
+Bytes) begrenzen, sodass anschließend nur diese Blöcke umgehängt
+werden müssen?  blk_queue_hardsect_size scheint da ein Punkt zu sein.
+-->
+
+Es folgt: `bio_vec`s sind beliebig groß und haben hintereinander, also
+als Array innerhalb eines `bio`s, eine Größe vielfach zu 512 Byte.
+
+Gibt es irgendwelche Einschränkungen für die `bio_vec`s?  Können wir
+welche forcieren?
+
+Die bisherigen Raidimplementierungen gruppieren darüber hinaus mehrere
+Blöcke auf einem Device (auf dem Raid?) in Chunks (was mit Problemen
+beim Zugriff über Chunkgrenzen hinweg führt).
+
+Aus http://www.makelinux.net/ldd3/chp-16-sect-1.shtml:
+
+> 16.1.4. A Note on Sector Sizes
+>
+> As we have mentioned before, the kernel treats every disk as a linear
+> array of 512-byte sectors. Not all hardware uses that sector size,
+> however. Getting a device with a different sector size to work is not
+> particularly hard; it is just a matter of taking care of a few
+> details. The sbull device exports a hardsect_size parameter that can
+> be used to change the "hardware" sector size of the device; by looking
+> at its implementation, you can see how to add this sort of support to
+> your own drivers. 
+
+> The first of those details is to inform the kernel of the sector size
+> your device supports. The hardware sector size is a parameter in the
+> request queue, rather than in the gendisk structure. This size is set
+> with a call to blk_queue_hardsect_size immediately after the queue is
+> allocated: 
+>
+> blk_queue_hardsect_size(dev->queue, hardsect_size);
+>
+> Once that is done, the kernel adheres to your device's hardware sector
+> size. All I/O requests are properly aligned at the beginning of a
+> hardware sector, and the length of each request is an integral number
+> of sectors. You must remember, however, that the kernel always
+> expresses itself in 512-byte sectors; thus, it is necessary to
+> translate all sector numbers accordingly.
+
+Ansonsten folgt daraus Umkopieren in Puffer für jedes einzelne
+Speichergerät und Konstruktion von neuen bios.  Anschließend
+Berechnung der Redundanzen und anschließend das Schreiben auf die
+Platten.
+
+Für die Puffer ist ein Cache ähnlich wie der stripe-cache von raid5.c
+angebracht, der Aufbau muss das Einfügen von fehlenden Daten (zur
+Berechnung der Redundanzen) unterstützen, d.h. solange noch Blöcke von
+einer Platte fehlen, blockieren wir.  Welche Informationen sind für
+diese Art Puffer noch notwendig?
+
 
 Der `md`-Treiber
 ----------------

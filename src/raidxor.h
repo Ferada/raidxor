@@ -11,8 +11,8 @@ struct raidxor_private_data_s {
 	mddev_t *mddev;
 };
 
-typedef struct raidxor_private_data_s conf_t;
+typedef struct raidxor_private_data_s raidxor_conf_t;
 
-#define mddev_to_conf(mddev) ((conf_t *) mddev->private)
+#define mddev_to_conf(mddev) (mddev->private)
 
 #endif
