@@ -112,7 +112,7 @@ static void raidxor_end_read_request(struct bio *bio, int error)
 			break;
 	}
 	/* offset for the copy operations */
-	offset = index * 512;
+	to_offset = index * 512;
 
 	/* the data which the master bio wants, is partially in the pages
 	   of this bio, therefore we copy it */
