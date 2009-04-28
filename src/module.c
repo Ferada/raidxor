@@ -41,6 +41,8 @@ static int raidxor_run(mddev_t *mddev)
 	conf->mddev = mddev;
 	conf->n_data_disks = (mddev->raid_disks - 2); /* FIXME */
 
+	spin_lock_init(&conf->device_lock);
+
 	printk(KERN_INFO "raidxor: FIXME: assuming devices in linear order\n");
 
 	size = -1;
@@ -119,11 +121,16 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio) {
 	unsigned int npages, size;
 	struct bio *rbio;
 	struct page *page;
+	unsigned long flags;
 	raidxor_bio *rxbio;
 	int i, j;
 
-	printk (KERN_INFO "raidxor: got request\n");
-	printk (KERN_INFO "raidxor: %llu bytes of I/O\n", (unsigned long long) bio->bi_size);
+	spin_lock_irqsave(&conf->device_lock, flags);
+
+	printk(KERN_INFO "raidxor: got request\n");
+
+	printk(KERN_INFO "raidxor: splitting from sector %llu, %llu bytes\n",
+	       (unsigned long long) bio->bi_sector, (unsigned long long) bio->bi_size);
 
 	/* we don't handle read requests yet */
 	/* apparently, we do have to handle them ... */
@@ -143,6 +150,8 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio) {
 		size = 512 * ((bio->bi_size / 512) / conf->n_data_disks
 			      + ((bio->bi_size / 512) % conf->n_data_disks) ? 1 : 0);
 		npages = size / PAGE_SIZE + (size % PAGE_SIZE) ? 1 : 0;
+		printk(KERN_INFO "raidxor: into requests of size %llu a %u pages\n",
+		       (unsigned long long) size, npages);
 
 		atomic_set(&rxbio->remaining, 0);
 
@@ -159,6 +168,9 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio) {
 			rbio->bi_sector = bio->bi_sector / conf->n_data_disks;
 			rbio->bi_size = size;
 
+			printk(KERN_INFO "raidxor: request %d goes to physical sector %llu\n",
+			       i, (unsigned long long) rbio->bi_sector);
+
 			rbio->bi_end_io = raidxor_end_read_request;
 
 			for (j = 0; j < npages; ++j) {
@@ -168,6 +180,8 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio) {
 				rbio->bi_io_vec[j].bv_page = page;
 			}
 		}
+
+		goto out_free_pages;
 
 		for (i = 0; i < conf->n_data_disks; ++i) {
 			atomic_inc(&rxbio->remaining);
@@ -213,6 +227,7 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio) {
 	//bio_io_error(bio); // == bio_endio(bio, -EIO)
 
 out:
+	spin_unlock_irqrestore(&conf->device_lock, flags);
 	bio_io_error(bio);
 	return 0;
 }
