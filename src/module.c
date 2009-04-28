@@ -12,20 +12,9 @@ static int raidxor_run(mddev_t *mddev)
 	mdk_rdev_t* rdev;
 	char buffer[32];
 	sector_t size;
+	unsigned int i;
 
 	printk (KERN_INFO "ignoring mddev->chunk_size\n");
-
-	size = -1;
-	rdev_for_each(rdev, tmp, mddev) {
-		/* nuthin' */
-		
-		printk(KERN_INFO "raidxor: rdev %s\n", bdevname(rdev->bdev, buffer));
-		
-		size = min(size, rdev->size);
-	}
-	if (size == -1)
-		goto out_inval;
-	mddev->array_size = size;
 
 	printk (KERN_INFO "raidxor: md_size is %llu blocks\n",
 		(unsigned long long) mddev->array_size);
@@ -36,16 +25,37 @@ static int raidxor_run(mddev_t *mddev)
 		goto out_inval;
 	}
 
-	conf = kzalloc(sizeof(raidxor_conf_t), GFP_KERNEL);
+	printk(KERN_INFO "raidxor: raid set %s active with %d disks\n",
+	       mdname(mddev), mddev->raid_disks);
+
+	printk(KERN_INFO "raidxor: FIXME: assuming two redundancy devices\n");
+	if (mddev->raid_disks < 3)
+		goto out_inval;
+
+	conf = kzalloc(sizeof(raidxor_conf_t) +
+		       sizeof(struct disk_info) * (mddev->raid_disks - 1), GFP_KERNEL);
 	mddev->private = conf;
 	if (!conf)
 		goto out_no_mem;
 
 	conf->mddev = mddev;
+	conf->n_data_disks = (mddev->raid_disks - 2); /* FIXME */
 
+	printk(KERN_INFO "raidxor: FIXME: assuming devices in linear order\n");
 
-	printk(KERN_INFO "raidxor: raid set %s active with %d disks\n",
-	       mdname(mddev), mddev->raid_disks);
+	size = -1;
+	i = 0;
+	rdev_for_each(rdev, tmp, mddev) {
+		printk(KERN_INFO "raidxor: rdev %s\n", bdevname(rdev->bdev, buffer));
+
+		size = min(size, rdev->size);
+		conf->disks[i].rdev = rdev;
+
+		++i;
+	}
+	if (size == -1)
+		goto out_inval;
+	mddev->array_size = size;
 
 	return 0;
 
@@ -96,8 +106,13 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio) {
 		return 0;
 	}
 
-	// only used for md driver housekeeping
+	/* only used for md driver housekeeping */
 	md_write_start(mddev, bio);
+
+	/* calculate */
+	{
+
+	}
 
 	//bio_endio(bio, -EOPNOTSUPP);
 
