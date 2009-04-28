@@ -101,7 +101,48 @@ static void raidxor_end_read_request(struct bio *bio, int error)
 {
 	raidxor_bio *rxbio = (raidxor_bio *)(bio->bi_private);
 	raidxor_conf_t *conf = mddev_to_conf(rxbio->mddev);
-	int i;
+	unsigned int i, j, index;
+	struct bio *mbio = rxbio->master_bio;
+	struct bio_vec *bvfrom, *bvto;
+	int from_offset, to_offset;
+	char *mapped;
+
+	for (index = 0; index < conf->n_data_disks; ++index) {
+		if (conf->disks[index].rdev->bdev == bio->bi_bdev)
+			break;
+	}
+	/* offset for the copy operations */
+	offset = index * 512;
+
+	/* the data which the master bio wants, is partially in the pages
+	   of this bio, therefore we copy it */
+	i = 0;
+	bvto = bio_iovec_idx(mbio, i);
+	for (; to_offset >= bvto->bv_len;) {
+		to_offset -= bvto->bv_len;
+		bvto = bio_iovec_idx(mbio, ++i);
+	}
+
+	/* copy chunks of 512 bytes, advancing bvfrom and bvto when
+	   necessary */
+	j = 0;
+	from_offset = 0;
+	bvfrom = bio_iovec_idx(bio, j);
+	for (; i < bio->bi_vcnt;) {
+		mapped = __bio_kmap_atomic(mbio, i, KM_USER0);
+		memcpy(mapped + bvto->bv_offset + to_offset,
+		       bvfrom->bv_page + bvfrom->bv_offset + from_offset,
+		       512);
+		__bio_kunmap_atomic(mbio, KM_USER0);
+
+		from_offset += 512;
+		if (from_offset >= bvfrom->bv_len)
+			bvfrom = bio_iovec_idx(bio, ++j);
+
+		to_offset += conf->n_data_disks * 512;
+		if (to_offset >= bvto->bv_len)
+			bvto = bio_iovec_idx(mbio, ++i);
+	}
 
 	if (atomic_dec_and_test(&rxbio->remaining)) {
 		bio_endio(rxbio->master_bio, 0);
@@ -178,6 +219,8 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio) {
 				if (!page)
 					goto out_free_pages;
 				rbio->bi_io_vec[j].bv_page = page;
+				rbio->bi_io_vec[j].bv_len = PAGE_SIZE;
+				rbio->bi_io_vec[j].bv_offset = j * PAGE_SIZE;
 			}
 		}
 
