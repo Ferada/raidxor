@@ -16,9 +16,6 @@ static int raidxor_run(mddev_t *mddev)
 
 	printk (KERN_INFO "raidxor: ignoring mddev->chunk_size\n");
 
-	printk (KERN_INFO "raidxor: md_size is %llu blocks\n",
-		(unsigned long long) mddev->array_size);
-
 	if (mddev->level != LEVEL_XOR) {
 		printk(KERN_ERR "raidxor: %s: raid level not set to xor (%d)\n",
 		       mdname(mddev), mddev->level);
@@ -45,19 +42,24 @@ static int raidxor_run(mddev_t *mddev)
 
 	printk(KERN_INFO "raidxor: FIXME: assuming devices in linear order\n");
 
-	size = -1;
+	size = -1; /* in sectors, that is 1024 byte (or 512? find out!)*/
 	i = 0;
 	rdev_for_each(rdev, tmp, mddev) {
-		printk(KERN_INFO "raidxor: rdev %s\n", bdevname(rdev->bdev, buffer));
-
 		size = min(size, rdev->size);
+
+		printk(KERN_INFO "raidxor: rdev %s, %llu\n", bdevname(rdev->bdev, buffer),
+			(unsigned long long) rdev->size);
 		conf->disks[i].rdev = rdev;
 
 		++i;
 	}
 	if (size == -1)
 		goto out_inval;
-	mddev->array_size = size;
+	mddev->size = size;
+	mddev->array_sectors = size;
+
+	printk (KERN_INFO "raidxor: array_sectors is %llu sectors\n",
+		(unsigned long long) mddev->array_sectors);
 
 	return 0;
 
@@ -158,8 +160,8 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio) {
 		for (i = 0; i < conf->n_data_disks; ++i) {
 			rbio = bio_alloc(GFP_NOIO, npages);
 			if (!rbio)
-				goto out_free_bios;
-			rxbio->bios[i] = bio;
+				goto out_free_pages;
+			rxbio->bios[i] = rbio;
 
 			rbio->bi_rw = READ;
 			rbio->bi_private = rxbio;
@@ -181,8 +183,6 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio) {
 			}
 		}
 
-		goto out_free_pages;
-
 		for (i = 0; i < conf->n_data_disks; ++i) {
 			atomic_inc(&rxbio->remaining);
 			generic_make_request(rxbio->bios[i]);
@@ -191,12 +191,11 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio) {
 		return 0;
 	out_free_pages:
 		for (i = 0; i < conf->n_data_disks; ++i)
-			for (j = 0; j < npages; ++j)
-				safe_put_page(rxbio->bios[i]->bi_io_vec[j].bv_page);
-	out_free_bios:
-		for (i = 0; i < conf->n_data_disks; ++i)
-			if (rxbio->bios[i])
+			if (rxbio->bios[i]) {
+				for (j = 0; j < npages; ++j)
+					safe_put_page(rxbio->bios[i]->bi_io_vec[j].bv_page);
 				bio_put(rxbio->bios[i]);
+			}
 	out_free_rxbio:
 		kfree(rxbio);
 
