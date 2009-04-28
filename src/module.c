@@ -14,7 +14,7 @@ static int raidxor_run(mddev_t *mddev)
 	sector_t size;
 	unsigned int i;
 
-	printk (KERN_INFO "ignoring mddev->chunk_size\n");
+	printk (KERN_INFO "raidxor: ignoring mddev->chunk_size\n");
 
 	printk (KERN_INFO "raidxor: md_size is %llu blocks\n",
 		(unsigned long long) mddev->array_size);
@@ -97,21 +97,31 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio) {
 	mddev_t *mddev = q->queuedata;
 	raidxor_conf_t *conf = mddev_to_conf(mddev);
 	const int rw = bio_data_dir(bio);
+	unsigned int stripe_size;
 
 	printk (KERN_INFO "raidxor: got request\n");
+	printk (KERN_INFO "raidxor: %llu bytes of I/O\n", (unsigned long long) bio->bi_size);
 
 	/* we don't handle read requests yet */
 	if (rw == READ) {
+		printk (KERN_INFO "raidxor: FIXME: not handling read request\n");
 		bio_endio(bio, -EOPNOTSUPP);
 		return 0;
 	}
 
 	/* only used for md driver housekeeping */
-	md_write_start(mddev, bio);
+	//md_write_start(mddev, bio);
 
-	/* calculate */
+	/* allocate enough memory for the transfers to each of the disks */
+	/* size = (bi_size / (512 * data_disks)) */
+	stripe_size = 512 * ((bio->bi_size / 512) / conf->n_data_disks
+			     + (bio->bi_size / 512) % conf->n_data_disks);
+	
+	printk (KERN_INFO "raidxor: i want to allocate %u bytes for each drive\n", stripe_size);
+
+	/* calculate the stripes */
 	{
-
+		
 	}
 
 	//bio_endio(bio, -EOPNOTSUPP);
@@ -121,6 +131,7 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio) {
 
 	// stop this transfer and signal an error to upper level (not md, but blk_queue)
 	//bio_io_error(bio); // == bio_endio(bio, -EIO)
+	bio_io_error(bio);
 	return 0;
 }
 
