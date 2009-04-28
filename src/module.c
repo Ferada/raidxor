@@ -188,8 +188,8 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio) {
 		rxbio->mddev = mddev;
 
 		/* reading at most one sector more then necessary on (each disk - 1) */
-		size = 512 * ((bio->bi_size / 512) / conf->n_data_disks
-			      + ((bio->bi_size / 512) % conf->n_data_disks) ? 1 : 0);
+		size = 512 * ((bio->bi_size / 512) / conf->n_data_disks +
+			      ((bio->bi_size / 512) % conf->n_data_disks) ? 1 : 0);
 		npages = size / PAGE_SIZE + (size % PAGE_SIZE) ? 1 : 0;
 		printk(KERN_INFO "raidxor: into requests of size %llu a %u pages\n",
 		       (unsigned long long) size, npages);
@@ -206,7 +206,8 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio) {
 			rbio->bi_private = rxbio;
 
 			rbio->bi_bdev = conf->disks[i].rdev->bdev;
-			rbio->bi_sector = bio->bi_sector / conf->n_data_disks;
+			rbio->bi_sector = bio->bi_sector / conf->n_data_disks +
+				conf->disks[i].rdev->data_offset;
 			rbio->bi_size = size;
 
 			printk(KERN_INFO "raidxor: request %d goes to physical sector %llu\n",
