@@ -128,6 +128,7 @@ static struct attribute *raidxor_attrs[] = {
 	&raidxor_number_of_resources,
 	&raidxor_units_per_resource,
 	//&raidxor_encoding,
+	NULL
 };
 static struct attribute_group raidxor_attrs_group = {
 	.name = NULL,
