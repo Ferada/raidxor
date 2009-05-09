@@ -4,6 +4,10 @@
 
 #include "raidxor.h"
 
+static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
+
+}
+
 /*
   everything < 4096 Bytes !
 
@@ -27,7 +31,7 @@ raidxor_show_units_per_resource(mddev_t *mddev, char *page)
 	raidxor_conf_t *conf = mddev_to_conf(mddev);
 
 	if (conf)
-		return sprintf(page, "%u\n", conf->units_per_resource);
+		return sprintf(page, "%ul\n", conf->units_per_resource);
 	else
 		return 0;
 }
@@ -44,7 +48,21 @@ raidxor_store_units_per_resource(mddev_t *mddev, const char *page, size_t len)
 	if (!conf)
 		return -ENODEV;
 
-	return -EINVAL;
+	new = simple_strtoul(page, NULL, 10);
+
+	if (new == 0)
+		return -EINVAL;
+
+	if (conf->resources != NULL) {
+		kfree(conf->resources);
+		conf->resources = NULL;
+	}
+
+	conf->units_per_resource = new;
+
+	raidxor_try_configure_raid(conf);
+
+	return 0;
 }
 
 static ssize_t
@@ -53,7 +71,7 @@ raidxor_show_number_of_resources(mddev_t *mddev, char *page)
 	raidxor_conf_t *conf = mddev_to_conf(mddev);
 
 	if (conf)
-		return sprintf(page, "%u\n", conf->n_resources);
+		return sprintf(page, "%ul\n", conf->n_resources);
 	else
 		return 0;
 }
@@ -157,9 +175,12 @@ static int raidxor_run(mddev_t *mddev)
 
 	conf->configured = 0;
 	conf->mddev = mddev;
-#if 0
-	conf->n_data_disks = (mddev->raid_disks - 2); /* FIXME */
-#endif
+	conf->units_per_resource = 0;
+	conf->n_resoures = 0;
+	conf->resources = NULL;
+	conf->n_stripes = 0;
+	conf->stripes = NULL;
+	conf->n_units = mddev->raid_disks;
 
 	spin_lock_init(&conf->device_lock);
 

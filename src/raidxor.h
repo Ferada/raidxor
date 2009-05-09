@@ -117,14 +117,14 @@ struct raidxor_private_data_s {
 
 	unsigned int configured;
 
-	unsigned int units_per_resource;
-	unsigned int n_resources;
+	unsigned long units_per_resource;
+	unsigned long n_resources;
 	raidxor_resource_t *resources;
 
-	unsigned int n_stripes;
+	unsigned long n_stripes;
 	stripe_t *stripes;
 
-	unsigned int n_units;
+	unsigned long n_units;
 	disk_info_t units[0];
 };
 
