@@ -5,7 +5,19 @@
 #include "raidxor.h"
 
 static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
+	/* new_decode_dev can get us a dev_t from an encoded userland value
+	   (minor, major) */
+	if (!conf)
+		return;
 
+	if (conf->n_resources > 0 && conf->units_per_resource > 0) {
+		printk(KERN_INFO "raidxor: got enough information, building raid\n");
+	}
+	else {
+		printk(KERN_INFO
+			"raidxor: need number of resources or units per resource: %lu %lu\n",
+			conf->n_resources, conf->units_per_resource);
+	}
 }
 
 /*
@@ -31,7 +43,7 @@ raidxor_show_units_per_resource(mddev_t *mddev, char *page)
 	raidxor_conf_t *conf = mddev_to_conf(mddev);
 
 	if (conf)
-		return sprintf(page, "%ul\n", conf->units_per_resource);
+		return sprintf(page, "%lu\n", conf->units_per_resource);
 	else
 		return 0;
 }
@@ -48,7 +60,7 @@ raidxor_store_units_per_resource(mddev_t *mddev, const char *page, size_t len)
 	if (!conf)
 		return -ENODEV;
 
-	new = simple_strtoul(page, NULL, 10);
+	strict_strtoul(page, 10, &new);
 
 	if (new == 0)
 		return -EINVAL;
@@ -62,7 +74,7 @@ raidxor_store_units_per_resource(mddev_t *mddev, const char *page, size_t len)
 
 	raidxor_try_configure_raid(conf);
 
-	return 0;
+	return len;
 }
 
 static ssize_t
@@ -71,7 +83,7 @@ raidxor_show_number_of_resources(mddev_t *mddev, char *page)
 	raidxor_conf_t *conf = mddev_to_conf(mddev);
 
 	if (conf)
-		return sprintf(page, "%ul\n", conf->n_resources);
+		return sprintf(page, "%lu\n", conf->n_resources);
 	else
 		return 0;
 }
@@ -81,37 +93,27 @@ raidxor_store_number_of_resources(mddev_t *mddev, const char *page, size_t len)
 {
 	raidxor_conf_t *conf = mddev_to_conf(mddev);
 	unsigned long new;
-	int err;
+
 	if (len >= PAGE_SIZE)
 		return -EINVAL;
 	if (!conf)
 		return -ENODEV;
 
-	/* new_decode_dev can get us a dev_t from an encoded userland value
-	   (minor, major) */
-#if 0
-	if (strict_strtoul(page, 10, &new))
-		return -EINVAL;
-	if (new <= 16 || new > 32768)
-		return -EINVAL;
-	while (new < conf->max_nr_stripes) {
-		if (drop_one_stripe(conf))
-			conf->max_nr_stripes--;
-		else
-			break;
-	}
-	err = md_allow_write(mddev);
-	if (err)
-		return err;
-	while (new > conf->max_nr_stripes) {
-		if (grow_one_stripe(conf))
-			conf->max_nr_stripes++;
-		else break;
-	}
-	return len;
-#endif
+	strict_strtoul(page, 10, &new);
 
-	return -EINVAL;
+	if (new == 0)
+		return -EINVAL;
+
+	if (conf->resources != NULL) {
+		kfree(conf->resources);
+		conf->resources = NULL;
+	}
+
+	conf->n_resources = new;
+
+	raidxor_try_configure_raid(conf);
+
+	return len;
 }
 
 static struct md_sysfs_entry
@@ -177,7 +179,7 @@ static int raidxor_run(mddev_t *mddev)
 	conf->configured = 0;
 	conf->mddev = mddev;
 	conf->units_per_resource = 0;
-	conf->n_resoures = 0;
+	conf->n_resources = 0;
 	conf->resources = NULL;
 	conf->n_stripes = 0;
 	conf->stripes = NULL;
