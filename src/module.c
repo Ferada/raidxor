@@ -116,6 +116,18 @@ raidxor_store_number_of_resources(mddev_t *mddev, const char *page, size_t len)
 	return len;
 }
 
+static ssize_t
+raidxor_show_encoding(mddev_t *mddev, char *page)
+{
+	return -EINVAL;
+}
+
+static ssize_t
+raidxor_store_encoding(mddev_t *mddev, const char *page, size_t len)
+{
+	return -EINVAL;
+}
+
 static struct md_sysfs_entry
 raidxor_number_of_resources = __ATTR(number_of_resources, S_IRUGO | S_IWUSR,
 				     raidxor_show_number_of_resources,
@@ -126,12 +138,18 @@ raidxor_units_per_resource = __ATTR(units_per_resource, S_IRUGO | S_IWUSR,
 				    raidxor_show_units_per_resource,
 				    raidxor_store_units_per_resource);
 
+static struct md_sysfs_entry
+raidxor_encoding = __ATTR(encoding, S_IRUGO | S_IWUSR,
+			  raidxor_show_encoding,
+			  raidxor_store_encoding);
+
 static struct attribute *raidxor_attrs[] = {
 	&raidxor_number_of_resources,
 	&raidxor_units_per_resource,
-	//&raidxor_encoding,
+	&raidxor_encoding,
 	NULL
 };
+
 static struct attribute_group raidxor_attrs_group = {
 	.name = NULL,
 	.attrs = raidxor_attrs,
