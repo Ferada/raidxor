@@ -29,6 +29,33 @@ Sekundär:
 - zusätzliche Parallelisierung mit Kernelthreads
 
 
+
++----------+ +----------+
+|Resource 1| |Resource 2|
++----------+ +----------+
+|  Red 1   | |  Unit 4  |
++==========+=+==========+==========+
+¦  Unit 2  ¦ ¦  Red 2   ¦ Stripe 2 ¦
++==========+=+==========+==========+
+|  Red 3   | |  Unit 6  |
++----------+ +----------+
+
+Das heisst, ein Stripe besteht aus N Laufwerken, die entweder Units
+oder Redundancy sind.  Die Reihenfolge ist egal.  Die Redundancies
+sind beim Schreiben wichtig und beim Lesen mit Fehlerfall.
+
+Wenn eine Einheit ausfällt, dann für immer.  Die Wiederherstellung
+muss über einen Userspacedaemon oder interne Berechnung der
+Dekodierungsgleichungen geschehen.
+
+Die Blockgrösse wird von mdadm vorgegeben: Potenzen von 2 grösser als
+512 und kleiner als 4096 (?).  Eine Funktion muss eine Anfrage an das
+Raid aufspalten mit diesem Parameter; eine zweite sollte einen Satz
+fertiger Übertragungen wieder zusammensetzen (ebenfalls mit diesem
+Parameter).
+
+
+
 XOR mit `xor_blocks` in `xor.h`.
 
 http://www.geocities.com/ravikiran_uvs/articles/blkdevarch.html

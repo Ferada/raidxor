@@ -4,6 +4,126 @@
 
 #include "raidxor.h"
 
+/*
+  everything < 4096 Bytes !
+
+  /sys/md/raidxor/number_of_resources:
+  [number_of_resources]
+
+  /sys/md/raidxor/units_per_resource
+  [number_of_units_per_resource]
+
+  then we have a grid and can assign the units
+
+  /sys/md/raidxor/redundancy:
+  [unit_dev_t][redundant][length_of_equation]
+    [unit_dev_t] ... [unit_dev_t]
+  [unit_dev_t][not_redundant]
+  ...
+ */
+static ssize_t
+raidxor_show_units_per_resource(mddev_t *mddev, char *page)
+{
+	raidxor_conf_t *conf = mddev_to_conf(mddev);
+
+	if (conf)
+		return sprintf(page, "%u\n", conf->units_per_resource);
+	else
+		return 0;
+}
+
+static ssize_t
+raidxor_store_units_per_resource(mddev_t *mddev, const char *page, size_t len)
+{
+	raidxor_conf_t *conf = mddev_to_conf(mddev);
+	unsigned long new;
+	int err;
+
+	if (len >= PAGE_SIZE)
+		return -EINVAL;
+	if (!conf)
+		return -ENODEV;
+
+	return -EINVAL;
+}
+
+static ssize_t
+raidxor_show_number_of_resources(mddev_t *mddev, char *page)
+{
+	raidxor_conf_t *conf = mddev_to_conf(mddev);
+
+	if (conf)
+		return sprintf(page, "%u\n", conf->n_resources);
+	else
+		return 0;
+}
+
+static ssize_t
+raidxor_store_number_of_resources(mddev_t *mddev, const char *page, size_t len)
+{
+	raidxor_conf_t *conf = mddev_to_conf(mddev);
+	unsigned long new;
+	int err;
+	if (len >= PAGE_SIZE)
+		return -EINVAL;
+	if (!conf)
+		return -ENODEV;
+
+	/* new_decode_dev can get us a dev_t from an encoded userland value
+	   (minor, major) */
+#if 0
+	if (strict_strtoul(page, 10, &new))
+		return -EINVAL;
+	if (new <= 16 || new > 32768)
+		return -EINVAL;
+	while (new < conf->max_nr_stripes) {
+		if (drop_one_stripe(conf))
+			conf->max_nr_stripes--;
+		else
+			break;
+	}
+	err = md_allow_write(mddev);
+	if (err)
+		return err;
+	while (new > conf->max_nr_stripes) {
+		if (grow_one_stripe(conf))
+			conf->max_nr_stripes++;
+		else break;
+	}
+	return len;
+#endif
+
+	return -EINVAL;
+}
+
+static struct md_sysfs_entry
+raidxor_number_of_resources = __ATTR(number_of_resources, S_IRUGO | S_IWUSR,
+				     raidxor_show_number_of_resources,
+				     raidxor_store_number_of_resources);
+
+static struct md_sysfs_entry
+raidxor_units_per_resource = __ATTR(units_per_resource, S_IRUGO | S_IWUSR,
+				    raidxor_show_units_per_resource,
+				    raidxor_store_units_per_resource);
+
+static struct attribute *raidxor_attrs[] = {
+	&raidxor_number_of_resources,
+	&raidxor_units_per_resource,
+	//&raidxor_encoding,
+};
+static struct attribute_group raidxor_attrs_group = {
+	.name = NULL,
+	.attrs = raidxor_attrs,
+};
+
+static void check_raid_parameters(raidxor_conf_t *conf)
+{
+	spin_lock(&conf->device_lock);
+	conf->configured = 0;
+	spin_unlock(&conf->device_lock);
+}
+
+
 
 static int raidxor_run(mddev_t *mddev)
 {
@@ -35,8 +155,11 @@ static int raidxor_run(mddev_t *mddev)
 	if (!conf)
 		goto out_no_mem;
 
+	conf->configured = 0;
 	conf->mddev = mddev;
+#if 0
 	conf->n_data_disks = (mddev->raid_disks - 2); /* FIXME */
+#endif
 
 	spin_lock_init(&conf->device_lock);
 
@@ -49,7 +172,9 @@ static int raidxor_run(mddev_t *mddev)
 
 		printk(KERN_INFO "raidxor: rdev %s, %llu\n", bdevname(rdev->bdev, buffer),
 			(unsigned long long) rdev->size);
+#if 0
 		conf->disks[i].rdev = rdev;
+#endif
 
 		++i;
 	}
@@ -60,6 +185,14 @@ static int raidxor_run(mddev_t *mddev)
 
 	printk (KERN_INFO "raidxor: array_sectors is %llu sectors\n",
 		(unsigned long long) mddev->array_sectors);
+
+	/* Ok, everything is just fine now */
+	if (sysfs_create_group(&mddev->kobj, &raidxor_attrs_group)) {
+		printk(KERN_ERR
+		       "raidxor: failed to create sysfs attributes for %s\n",
+		       mdname(mddev));
+		goto out_free_conf;
+	}
 
 	return 0;
 
@@ -83,6 +216,7 @@ static int raidxor_stop(mddev_t *mddev)
 {
 	raidxor_conf_t *conf = mddev_to_conf(mddev);
 
+	sysfs_remove_group(&mddev->kobj, &raidxor_attrs_group);
 	mddev_to_conf(mddev) = NULL;
 	kfree(conf);
 
@@ -99,7 +233,7 @@ static void raidxor_status(struct seq_file *seq, mddev_t *mddev)
 
 static void raidxor_end_read_request(struct bio *bio, int error)
 {
-	raidxor_bio *rxbio = (raidxor_bio *)(bio->bi_private);
+	raidxor_bio_t *rxbio = (raidxor_bio_t *)(bio->bi_private);
 	raidxor_conf_t *conf = mddev_to_conf(rxbio->mddev);
 	unsigned int i, j, index;
 	struct bio *mbio = rxbio->master_bio;
@@ -107,10 +241,12 @@ static void raidxor_end_read_request(struct bio *bio, int error)
 	int from_offset, to_offset;
 	char *mapped;
 
+#if 0
 	for (index = 0; index < conf->n_data_disks; ++index) {
 		if (conf->disks[index].rdev->bdev == bio->bi_bdev)
 			break;
 	}
+#endif
 	/* offset for the copy operations */
 	to_offset = index * 512;
 
@@ -139,7 +275,9 @@ static void raidxor_end_read_request(struct bio *bio, int error)
 		if (from_offset >= bvfrom->bv_len)
 			bvfrom = bio_iovec_idx(bio, ++j);
 
+#if 0
 		to_offset += conf->n_data_disks * 512;
+#endif
 		if (to_offset >= bvto->bv_len)
 			bvto = bio_iovec_idx(mbio, ++i);
 	}
@@ -165,10 +303,12 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio) {
 	struct bio *rbio;
 	struct page *page;
 	unsigned long flags;
-	raidxor_bio *rxbio;
+	raidxor_bio_t *rxbio;
 	int i, j;
 
 	printk(KERN_INFO "raidxor: got request\n");
+
+	goto out;
 
 	printk(KERN_INFO "raidxor: splitting from sector %llu, %llu bytes\n",
 	       (unsigned long long) bio->bi_sector, (unsigned long long) bio->bi_size);
@@ -180,22 +320,27 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio) {
 
 		/* TODO: create a pool for this */
 		//rxbio = mempool_alloc(conf->rxbio_pool, GFP_NOIO);
+#if 0
 		rxbio = kzalloc(sizeof(raidxor_bio) +
 				sizeof(struct bio *) * conf->n_data_disks, GFP_NOIO);
+#endif
 		if (!rxbio)
 			goto out_free_rxbio;
 		rxbio->master_bio = bio;
 		rxbio->mddev = mddev;
 
+#if 0
 		/* reading at most one sector more then necessary on (each disk - 1) */
 		size = 512 * ((bio->bi_size / 512) / conf->n_data_disks +
 			      ((bio->bi_size / 512) % conf->n_data_disks) ? 1 : 0);
+#endif
 		npages = size / PAGE_SIZE + (size % PAGE_SIZE) ? 1 : 0;
 		printk(KERN_INFO "raidxor: into requests of size %llu a %u pages\n",
 		       (unsigned long long) size, npages);
 
 		atomic_set(&rxbio->remaining, 0);
 
+#if 0
 		for (i = 0; i < conf->n_data_disks; ++i) {
 			rbio = bio_alloc(GFP_NOIO, npages);
 			if (!rbio)
@@ -238,6 +383,7 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio) {
 					safe_put_page(rxbio->bios[i]->bi_io_vec[j].bv_page);
 				bio_put(rxbio->bios[i]);
 			}
+#endif
 	out_free_rxbio:
 		kfree(rxbio);
 
