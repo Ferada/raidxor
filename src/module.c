@@ -122,6 +122,7 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 
 	/* FIXME: device size must a multiple of chunk size */
 	mddev->array_sectors = size;
+	set_capacity(mddev->gendisk, mddev->array_sectors);
 
 	printk (KERN_INFO "raidxor: array_sectors is %llu blocks\n",
 		(unsigned long long) mddev->array_sectors * 2);
@@ -396,6 +397,17 @@ static void raidxor_end_read_request(struct bio *bio, int error)
 	bio_put(bio);
 }
 
+static void raidxor_free_bios(raidxor_bio_t *rxbio)
+{
+	unsigned long i, j;
+	for (i = 0; i < rxbio->n_bios; ++i)
+		if (rxbio->bios[i]) {
+			for (j = 0; j < rxbio->bios[i]->bi_vcnt; ++j)
+				safe_put_page(rxbio->bios[i]->bi_io_vec[j].bv_page);
+			bio_put(rxbio->bios[i]);
+		}
+}
+
 /**
  * raidxor_prepare_read_bio() - build several bios from one request
  *
@@ -420,8 +432,8 @@ static int raidxor_prepare_read_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
 
 	/* reading at most one sector more then necessary on (each disk - 1) */
 	size = chunk_size *
-		((mbio->bi_size / chunk_size) /  +
-		 ((mbio->bi_size / chunk_size) % conf->n_resources) ? 1 : 0);
+		((mbio->bi_size / chunk_size) / rxbio->stripe->n_data_units +
+		 ((mbio->bi_size / chunk_size) % rxbio->stripe->n_data_units) ? 1 : 0);
 	npages = size / PAGE_SIZE + (size % PAGE_SIZE) ? 1 : 0;
 	printk(KERN_INFO "raidxor: splitting into requests of size %llu a %lu pages\n",
 	       (unsigned long long) size, npages);
@@ -439,6 +451,7 @@ static int raidxor_prepare_read_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
 		rbio->bi_sector = rxbio->master_bio->bi_sector / conf->n_resources +
 			conf->units[i].rdev->data_offset;
 		rbio->bi_size = size;
+		rbio->bi_vcnt = npages;
 
 		printk(KERN_INFO "raidxor: request %lu goes to physical sector %llu\n",
 		       i, (unsigned long long) rbio->bi_sector);
@@ -456,13 +469,10 @@ static int raidxor_prepare_read_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
 	}
 
 	return 0;
+
 out_free_pages:
-	for (i = 0; i < conf->n_resources; ++i)
-		if (rxbio->bios[i]) {
-			for (j = 0; j < npages; ++j)
-				safe_put_page(rxbio->bios[i]->bi_io_vec[j].bv_page);
-			bio_put(rxbio->bios[i]);
-		}
+	raidxor_free_bios(rxbio);
+	kfree(rxbio);
 	bio_io_error(mbio);
 	return 1;
 }
@@ -488,7 +498,9 @@ static void raidxord(mddev_t *mddev)
 			continue;
 
 		// FIXME: if we have a useful prepare_read_bio, remove this
+		raidxor_free_bios(rxbio);
 		bio_io_error(rxbio->master_bio);
+		kfree(rxbio);
 		continue;
 
 		spin_unlock(&conf->device_lock);
@@ -637,50 +649,70 @@ static void raidxor_status(struct seq_file *seq, mddev_t *mddev)
 	return;
 }
 
-static stripe_t * raidxor_sector_to_stripe(raidxor_conf_t *conf, sector_t sector)
+static int raidxor_bio_on_boundary(stripe_t *stripe, struct bio *bio,
+				   sector_t newsector)
 {
-	unsigned int sectors_per_chunk = conf->chunk_size >> 9;
-	
+	return (stripe->size - (newsector << 9)) < bio->bi_size;
 }
 
-static int raidxor_make_request(struct request_queue *q, struct bio *bio) {
+static stripe_t * raidxor_sector_to_stripe(raidxor_conf_t *conf, sector_t sector,
+					   sector_t *newsector)
+{
+	unsigned int sectors_per_chunk = conf->chunk_size >> 9;
+	stripe_t *stripe = conf->stripes;
+
+	for (;;) {
+		if (sector <= stripe->size >> 9)
+			break;
+		++stripe;
+		sector -= stripe->size >> 9;
+	}
+	*newsector = sector;
+
+	return stripe;
+}
+
+static int raidxor_make_request(struct request_queue *q, struct bio *bio)
+{
 	mddev_t *mddev = q->queuedata;
 	raidxor_conf_t *conf = mddev_to_conf(mddev);
 	const int rw = bio_data_dir(bio);
 	raidxor_bio_t *rxbio;
 	int i, j;
+	stripe_t *stripe;
+	sector_t newsector;
+
+	LOCKCONF(conf);
 
 	printk(KERN_INFO "raidxor: got request\n");
 
-	goto out;
+	stripe = raidxor_sector_to_stripe(conf, bio->bi_sector, &newsector);
 
-	/* we don't handle read requests yet */
-	/* apparently, we do have to handle them ... */
+	if (raidxor_bio_on_boundary(stripe, bio, newsector)) {
+		printk(KERN_INFO "raidxor: FIXME: bio lies on boundary\n");
+		goto out;
+	}
+
 	if (rw == READ) {
 		printk (KERN_INFO "raidxor: handling read request\n");
-
-		/* TODO: create a pool for this */
-		//rxbio = mempool_alloc(conf->rxbio_pool, GFP_NOIO);
 
 		rxbio = kzalloc(sizeof(raidxor_bio_t) +
 				sizeof(struct bio *) * conf->n_resources, GFP_NOIO);
 		if (!rxbio)
-			goto out_free_rxbio;
+			goto out;
 
 		rxbio->master_bio = bio;
 		rxbio->mddev = mddev;
-		rxbio->stripe = raidxor_sector_to_stripe(conf, bio->bi_sector);
-		rxbio->n_bios = conf->n_resources;
+		rxbio->stripe = stripe;
+		rxbio->n_bios = stripe->n_data_units;
 		atomic_set(&rxbio->remaining, rxbio->n_bios);
 
 		list_add_tail(&rxbio->lru, &conf->handle_list);
 		md_wakeup_thread(conf->mddev->thread);
 
-		return 0;
-	out_free_rxbio:
-		kfree(rxbio);
+		UNLOCKCONF(conf);
 
-		goto out;
+		return 0;
 	}
 
 	/* only used for md driver housekeeping */
@@ -708,6 +740,7 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio) {
 
 out:
 	bio_io_error(bio);
+	UNLOCKCONF(conf);
 	return 0;
 }
 
