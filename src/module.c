@@ -46,10 +46,8 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 	unsigned long i, j;
 	char buffer[32];
 	mddev_t *mddev = conf->mddev;
-	sector_t size;
+	sector_t size = 0;
 
-	/* new_decode_dev can get us a dev_t from an encoded userland value
-	   (minor, major) */
 	if (!conf) {
 		printk(KERN_DEBUG "raidxor: NULL pointer in raidxor_free_conf\n");
 		return;
@@ -114,15 +112,15 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 			unit->stripe = &stripes[i];
 			if (unit->redundant == 0) {
 				++stripes[i].n_data_units;
-				stripes[i].size += unit->rdev->size * 2;
+				stripes[i].size += (unit->rdev->size * 2) &
+					~(conf->chunk_size / 512 - 1);
 			}
 			stripes[i].units[j] = unit;
 		}
 		size += stripes[i].size / 2;
 	}
 
-	/* FIXME: size must be size * n_data_disks or something */
-	/* device size must a multiple of chunk size */
+	/* FIXME: device size must a multiple of chunk size */
 	mddev->array_sectors = size;
 
 	printk (KERN_INFO "raidxor: array_sectors is %llu blocks\n",
@@ -138,24 +136,6 @@ out_free_res:
 out:
 	return;
 }
-
-/*
-  everything < 4096 Bytes !
-
-  /sys/md/raidxor/number_of_resources:
-  [number_of_resources]
-
-  /sys/md/raidxor/units_per_resource
-  [number_of_units_per_resource]
-
-  then we have a grid and can assign the units
-
-  /sys/md/raidxor/redundancy:
-  [unit_dev_t][redundant][length_of_equation]
-    [unit_dev_t] ... [unit_dev_t]
-  [unit_dev_t][not_redundant]
-  ...
- */
 static ssize_t
 raidxor_show_units_per_resource(mddev_t *mddev, char *page)
 {
@@ -234,9 +214,92 @@ raidxor_show_encoding(mddev_t *mddev, char *page)
 	return -EIO;
 }
 
+/*
+  everything < 4096 Bytes !
+
+  /sys/md/raidxor/number_of_resources:
+  [number_of_resources]
+
+  /sys/md/raidxor/units_per_resource
+  [number_of_units_per_resource]
+
+  then we have a grid and can assign the units
+
+  /sys/md/raidxor/redundancy:
+  [index][redundant][length_of_equation]
+    [index] ... [index]
+  [index][not_redundant]
+  ...
+ */
 static ssize_t
 raidxor_store_encoding(mddev_t *mddev, const char *page, size_t len)
 {
+	raidxor_conf_t *conf = mddev_to_conf(mddev);
+	unsigned long new;
+	unsigned char index, redundant, length, i, red;
+	encoding_t *encoding;
+	size_t oldlen = len;
+
+	if (len >= PAGE_SIZE)
+		return -EINVAL;
+	if (!conf)
+		return -ENODEV;
+
+	for (; len >= 2;) {
+		index = *page++;
+		--len;
+
+		if (index >= conf->n_units)
+			goto out;
+
+		redundant = *page++;
+		--len;
+
+		if (redundant != 0 && redundant != 1)
+			return -EINVAL;
+
+		conf->units[index].redundant = redundant;
+
+		if (redundant == 0) {
+			printk(KERN_INFO "read non-redundant unit info\n");
+			continue;
+		}
+
+		if (len < 1)
+			goto out_reset;
+
+		length = *page++;
+		--len;
+
+		if (length > len)
+			goto out_reset;
+
+		encoding = kzalloc(sizeof(encoding_t) +
+				   sizeof(disk_info_t *) * length, GFP_NOIO);
+		if (!encoding)
+			goto out_reset;
+
+		for (i = 0; i < length; ++i) {
+			red = *page++;
+			--len;
+
+			if (red >= conf->n_units)
+				goto out_free_encoding;
+
+			encoding->units[i] = &conf->units[red];
+		}
+
+		conf->units[index].encoding = encoding;
+
+		printk(KERN_INFO "read redundant unit encoding info\n");
+	}
+
+	return oldlen;
+out_free_encoding:
+	kfree(encoding);
+out_reset:
+	conf->units[index].redundant = -1;
+out:
 	return -EINVAL;
 }
 
@@ -400,6 +463,7 @@ out_free_pages:
 				safe_put_page(rxbio->bios[i]->bi_io_vec[j].bv_page);
 			bio_put(rxbio->bios[i]);
 		}
+	bio_io_error(mbio);
 	return 1;
 }
 
@@ -414,11 +478,18 @@ static void raidxord(mddev_t *mddev)
 
 	spin_lock(&conf->device_lock);
 	for (;;) {
-		if (list_empty(&conf->handle_list)) {
+		if (list_empty(&conf->handle_list))
 			break;
-		}
+
 		rxbio = list_entry(conf->handle_list.next, typeof(*rxbio), lru);
 		list_del_init(&rxbio->lru);
+
+		if (raidxor_prepare_read_bio(conf, rxbio))
+			continue;
+
+		// FIXME: if we have a useful prepare_read_bio, remove this
+		bio_io_error(rxbio->master_bio);
+		continue;
 
 		spin_unlock(&conf->device_lock);
 		for (i = 0; i < rxbio->n_bios; ++i)
@@ -428,7 +499,8 @@ static void raidxord(mddev_t *mddev)
 	}
 	spin_unlock(&conf->device_lock);
 
-	printk(KERN_INFO "raidxor: raidxord inactive, handled %lu requests\n");
+	printk(KERN_INFO "raidxor: raidxord inactive, handled %lu requests\n",
+		handled);
 }
 
 static int raidxor_run(mddev_t *mddev)
@@ -470,6 +542,7 @@ static int raidxor_run(mddev_t *mddev)
 
 	conf->configured = 0;
 	conf->mddev = mddev;
+	conf->chunk_size = mddev->chunk_size;
 	conf->units_per_resource = 0;
 	conf->n_resources = 0;
 	conf->resources = NULL;
@@ -503,7 +576,7 @@ static int raidxor_run(mddev_t *mddev)
 		goto out_free_conf;
 
 	/* FIXME: used component size, multiple of chunk_size ... */
-	mddev->size = size; // & ~(mddev->chunk_size / 1024 - 1); 
+	mddev->size = size & ~(conf->chunk_size / 1024 - 1);
 	/* exported size */
 	mddev->array_sectors = 0;
 
@@ -566,7 +639,8 @@ static void raidxor_status(struct seq_file *seq, mddev_t *mddev)
 
 static stripe_t * raidxor_sector_to_stripe(raidxor_conf_t *conf, sector_t sector)
 {
-	int sectors_per_chunk = conf->chunk_size >> 9;
+	unsigned int sectors_per_chunk = conf->chunk_size >> 9;
+	
 }
 
 static int raidxor_make_request(struct request_queue *q, struct bio *bio) {
