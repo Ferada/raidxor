@@ -44,6 +44,9 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 	stripe_t *stripes;
 	disk_info_t *unit;
 	unsigned long i, j;
+	char buffer[32];
+	mddev_t *mddev = conf->mddev;
+	sector_t size;
 
 	/* new_decode_dev can get us a dev_t from an encoded userland value
 	   (minor, major) */
@@ -64,6 +67,15 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 		       "raidxor: parameters don't match %lu * %lu != %lu\n",
 		       conf->n_resources, conf->units_per_resource, conf->n_units);
 		goto out;
+	}
+
+	for (i = 0; i < conf->n_units; ++i) {
+		if (conf->units[i].redundant == -1) {
+			printk(KERN_INFO
+			       "raidxor: unit %lu, %s is not initialized\n",
+			       i, bdevname(conf->units[i].rdev->bdev, buffer));
+			goto out;
+		}
 	}
 
 	printk(KERN_INFO "raidxor: got enough information, building raid\n");
@@ -94,13 +106,27 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 
 	for (i = 0; i < conf->n_resources; ++i) {
 		stripes[i].n_units = conf->n_resources;
+		stripes[i].size = 0;
+
 		for (j = 0; j < conf->n_resources; ++j) {
 			unit = &conf->units[i * conf->n_resources + j];
 
 			unit->stripe = &stripes[i];
+			if (unit->redundant == 0) {
+				++stripes[i].n_data_units;
+				stripes[i].size += unit->rdev->size * 2;
+			}
 			stripes[i].units[j] = unit;
 		}
+		size += stripes[i].size / 2;
 	}
+
+	/* FIXME: size must be size * n_data_disks or something */
+	/* device size must a multiple of chunk size */
+	mddev->array_sectors = size;
+
+	printk (KERN_INFO "raidxor: array_sectors is %llu blocks\n",
+		(unsigned long long) mddev->array_sectors * 2);
 
 	conf->resources = resources;
 	conf->stripes = stripes;
@@ -331,7 +357,7 @@ static int raidxor_prepare_read_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
 
 	/* reading at most one sector more then necessary on (each disk - 1) */
 	size = chunk_size *
-		((mbio->bi_size / chunk_size) / conf->n_resources +
+		((mbio->bi_size / chunk_size) /  +
 		 ((mbio->bi_size / chunk_size) % conf->n_resources) ? 1 : 0);
 	npages = size / PAGE_SIZE + (size % PAGE_SIZE) ? 1 : 0;
 	printk(KERN_INFO "raidxor: splitting into requests of size %llu a %lu pages\n",
@@ -382,7 +408,7 @@ static void raidxord(mddev_t *mddev)
 	raidxor_conf_t *conf = mddev_to_conf(mddev);
 	int unplug = 0;
 	raidxor_bio_t *rxbio;
-	unsigned long i;
+	unsigned long i, handled = 0;
 
 	printk(KERN_INFO "raidxor: raidxord active\n");
 
@@ -397,11 +423,12 @@ static void raidxord(mddev_t *mddev)
 		spin_unlock(&conf->device_lock);
 		for (i = 0; i < rxbio->n_bios; ++i)
 			generic_make_request(rxbio->bios[i]);
+		++handled;
 		spin_lock(&conf->device_lock);
 	}
 	spin_unlock(&conf->device_lock);
 
-	printk(KERN_INFO "raidxor: raidxord inactive\n");
+	printk(KERN_INFO "raidxor: raidxord inactive, handled %lu requests\n");
 }
 
 static int raidxor_run(mddev_t *mddev)
@@ -466,20 +493,19 @@ static int raidxor_run(mddev_t *mddev)
 
 		printk(KERN_INFO "raidxor: device %lu rdev %s, %llu blocks\n",
 		       i, bdevname(rdev->bdev, buffer),
-		       (unsigned long long) rdev->size / 2);
+		       (unsigned long long) rdev->size * 2);
 		conf->units[i].rdev = rdev;
+		conf->units[i].redundant = -1;
 
 		--i;
 	}
 	if (size == -1)
 		goto out_free_conf;
 
-	/* device size must a multiple of chunk size */
-	mddev->size = size & ~(mddev->chunk_size / 1024 - 1);
-	mddev->array_sectors = size;
-
-	printk (KERN_INFO "raidxor: array_sectors is %llu blocks\n",
-		(unsigned long long) mddev->array_sectors / 2);
+	/* FIXME: used component size, multiple of chunk_size ... */
+	mddev->size = size; // & ~(mddev->chunk_size / 1024 - 1); 
+	/* exported size */
+	mddev->array_sectors = 0;
 
 	/* Ok, everything is just fine now */
 	if (sysfs_create_group(&mddev->kobj, &raidxor_attrs_group)) {
@@ -538,6 +564,11 @@ static void raidxor_status(struct seq_file *seq, mddev_t *mddev)
 	return;
 }
 
+static stripe_t * raidxor_sector_to_stripe(raidxor_conf_t *conf, sector_t sector)
+{
+	int sectors_per_chunk = conf->chunk_size >> 9;
+}
+
 static int raidxor_make_request(struct request_queue *q, struct bio *bio) {
 	mddev_t *mddev = q->queuedata;
 	raidxor_conf_t *conf = mddev_to_conf(mddev);
@@ -564,8 +595,8 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio) {
 
 		rxbio->master_bio = bio;
 		rxbio->mddev = mddev;
+		rxbio->stripe = raidxor_sector_to_stripe(conf, bio->bi_sector);
 		rxbio->n_bios = conf->n_resources;
-
 		atomic_set(&rxbio->remaining, rxbio->n_bios);
 
 		list_add_tail(&rxbio->lru, &conf->handle_list);

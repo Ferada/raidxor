@@ -77,14 +77,19 @@ struct raidxor_resource {
 
 /**
  * struct stripe - one stripe over multiple resources and units
+ * @size: size in bytes but multiple of block size (512)
  * @n_units: the number of contained units
  * @units: the actual units
  *
  * In the rectangular raid layout, this is a column of units.
  *
  * This is the correct level for en- and decoding.
+ *
+ * units = [u1 r1 r2 u2 u3] order as in parameter list.
  */
 struct stripe {
+	sector_t size;
+	unsigned int n_data_units;
 	unsigned int n_units;
 	disk_info_t *units[0];
 };
@@ -154,7 +159,7 @@ struct raidxor_bio {
 	atomic_t remaining;
 	mddev_t *mddev;
 
-	disk_info_t *unit;
+	stripe_t *stripe;
 
 	/* original bio going to /dev/mdX */
 	struct bio *master_bio;
