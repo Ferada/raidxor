@@ -138,7 +138,7 @@ raidxor_show_units_per_resource(mddev_t *mddev, char *page)
 	if (conf)
 		return sprintf(page, "%lu\n", conf->units_per_resource);
 	else
-		return 0;
+		return -ENODEV;
 }
 
 static ssize_t
@@ -157,9 +157,11 @@ raidxor_store_units_per_resource(mddev_t *mddev, const char *page, size_t len)
 	if (new == 0)
 		return -EINVAL;
 
+	WITHLOCKCONF(conf, {
 	raidxor_safe_free_conf(conf);
 	conf->units_per_resource = new;
 	raidxor_try_configure_raid(conf);
+	});
 
 	return len;
 }
@@ -172,7 +174,7 @@ raidxor_show_number_of_resources(mddev_t *mddev, char *page)
 	if (conf)
 		return sprintf(page, "%lu\n", conf->n_resources);
 	else
-		return 0;
+		return -ENODEV;
 }
 
 static ssize_t
@@ -203,7 +205,7 @@ raidxor_store_number_of_resources(mddev_t *mddev, const char *page, size_t len)
 static ssize_t
 raidxor_show_encoding(mddev_t *mddev, char *page)
 {
-	return -EINVAL;
+	return -EIO;
 }
 
 static ssize_t
@@ -250,7 +252,7 @@ static int raidxor_run(mddev_t *mddev)
 	sector_t size;
 	unsigned long i;
 
-	printk (KERN_INFO "raidxor: ignoring mddev->chunk_size\n");
+	printk (KERN_INFO "raidxor: FIXME: ignoring mddev->chunk_size\n");
 
 	if (mddev->level != LEVEL_XOR) {
 		printk(KERN_ERR "raidxor: %s: raid level not set to xor (%d)\n",
@@ -261,8 +263,7 @@ static int raidxor_run(mddev_t *mddev)
 	printk(KERN_INFO "raidxor: raid set %s active with %d disks\n",
 	       mdname(mddev), mddev->raid_disks);
 
-	printk(KERN_INFO "raidxor: FIXME: assuming two redundancy devices\n");
-	if (mddev->raid_disks < 3)
+	if (mddev->raid_disks < 1)
 		goto out_inval;
 
 	conf = kzalloc(sizeof(raidxor_conf_t) +
@@ -281,28 +282,28 @@ static int raidxor_run(mddev_t *mddev)
 	conf->n_units = mddev->raid_disks;
 
 	spin_lock_init(&conf->device_lock);
+	mddev->queue->queue_lock = &conf->device_lock;
 
-	printk(KERN_INFO "raidxor: FIXME: assuming devices in linear order\n");
+	size = -1; /* in sectors, that is 1024 byte */
 
-	size = -1; /* in sectors, that is 1024 byte (or 512? find out!)*/
-
-	i = 0;
+	i = conf->n_units - 1;
 	rdev_for_each(rdev, tmp, mddev) {
 		size = min(size, rdev->size);
 
-		printk(KERN_INFO "raidxor: rdev %s, %llu\n", bdevname(rdev->bdev, buffer),
-			(unsigned long long) rdev->size);
+		printk(KERN_INFO "raidxor: device %lu rdev %s, %llu blocks\n",
+		       i, bdevname(rdev->bdev, buffer),
+		       (unsigned long long) rdev->size / 2);
 		conf->units[i].rdev = rdev;
 
-		++i;
+		--i;
 	}
 	if (size == -1)
 		goto out_inval;
 	mddev->size = size;
 	mddev->array_sectors = size;
 
-	printk (KERN_INFO "raidxor: array_sectors is %llu sectors\n",
-		(unsigned long long) mddev->array_sectors);
+	printk (KERN_INFO "raidxor: array_sectors is %llu blocks\n",
+		(unsigned long long) mddev->array_sectors / 2);
 
 	/* Ok, everything is just fine now */
 	if (sysfs_create_group(&mddev->kobj, &raidxor_attrs_group)) {
@@ -335,7 +336,9 @@ static int raidxor_stop(mddev_t *mddev)
 	raidxor_conf_t *conf = mddev_to_conf(mddev);
 
 	sysfs_remove_group(&mddev->kobj, &raidxor_attrs_group);
+
 	mddev_to_conf(mddev) = NULL;
+	raidxor_safe_free_conf(conf);
 	kfree(conf);
 
 	return 0;
