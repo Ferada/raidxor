@@ -4,20 +4,113 @@
 
 #include "raidxor.h"
 
+#define LOCKCONF(conf) \
+	spin_lock(&conf->device_lock)
+
+#define UNLOCKCONF(conf) \
+	spin_unlock(&conf->device_lock)
+
+#define WITHLOCKCONF(conf,block) \
+	LOCKCONF(conf); \
+	do block while(0); \
+	UNLOCKCONF(conf);
+
+/**
+ * raidxor_safe_free_conf() - frees resource and stripe information
+ *
+ * Must be called inside conf lock.
+ */
+static void raidxor_safe_free_conf(raidxor_conf_t *conf) {
+	if (!conf) {
+		printk(KERN_DEBUG "raidxor: NULL pointer in raidxor_safe_free_conf\n");
+		return;
+	}
+
+	if (conf->resources != NULL) {
+		kfree(conf->resources);
+		conf->resources = NULL;
+	}
+
+	if (conf->stripes != NULL) {
+		kfree(conf->stripes);
+		conf->stripes = NULL;
+	}
+	
+	conf->configured = 0;
+}
+
 static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
+	raidxor_resource_t *resources;
+	stripe_t *stripes;
+	disk_info_t *unit;
+	unsigned long i, j;
+
 	/* new_decode_dev can get us a dev_t from an encoded userland value
 	   (minor, major) */
-	if (!conf)
+	if (!conf) {
+		printk(KERN_DEBUG "raidxor: NULL pointer in raidxor_free_conf\n");
 		return;
+	}
 
-	if (conf->n_resources > 0 && conf->units_per_resource > 0) {
-		printk(KERN_INFO "raidxor: got enough information, building raid\n");
-	}
-	else {
+	if (conf->n_resources <= 0 || conf->units_per_resource <= 0) {
 		printk(KERN_INFO
-			"raidxor: need number of resources or units per resource: %lu %lu\n",
+			"raidxor: need number of resources or units per resource: %lu or %lu\n",
 			conf->n_resources, conf->units_per_resource);
+		goto out;
 	}
+
+	if (conf->n_resources * conf->units_per_resource != conf->n_units) {
+		printk(KERN_INFO
+		       "raidxor: parameters don't match %lu * %lu != %lu\n",
+		       conf->n_resources, conf->units_per_resource, conf->n_units);
+		goto out;
+	}
+
+	printk(KERN_INFO "raidxor: got enough information, building raid\n");
+
+	resources = kzalloc((sizeof(raidxor_resource_t) +
+			     sizeof(disk_info_t *) * conf->units_per_resource) *
+			    conf->n_resources, GFP_KERNEL);
+	if (!resources)
+		goto out;
+
+	conf->n_stripes = conf->units_per_resource;
+
+	stripes = kzalloc((sizeof(stripe_t) +
+			   sizeof(disk_info_t *) * conf->n_resources) *
+			  conf->n_stripes, GFP_KERNEL);
+	if (!stripes)
+		goto out_free_res;
+
+	for (i = 0; i < conf->n_resources; ++i) {
+		resources[i].n_units = conf->units_per_resource;
+		for (j = 0; j < conf->units_per_resource; ++j) {
+			unit = &conf->units[i + j * conf->n_resources];
+
+			unit->resource = &resources[i];
+			resources[i].units[j] = unit;
+		}
+	}
+
+	for (i = 0; i < conf->n_resources; ++i) {
+		stripes[i].n_units = conf->n_resources;
+		for (j = 0; j < conf->n_resources; ++j) {
+			unit = &conf->units[i * conf->n_resources + j];
+
+			unit->stripe = &stripes[i];
+			stripes[i].units[j] = unit;
+		}
+	}
+
+	conf->resources = resources;
+	conf->stripes = stripes;
+	conf->configured = 1;
+
+	return;
+out_free_res:
+	kfree(resources);
+out:
+	return;
 }
 
 /*
@@ -53,7 +146,6 @@ raidxor_store_units_per_resource(mddev_t *mddev, const char *page, size_t len)
 {
 	raidxor_conf_t *conf = mddev_to_conf(mddev);
 	unsigned long new;
-	int err;
 
 	if (len >= PAGE_SIZE)
 		return -EINVAL;
@@ -65,13 +157,8 @@ raidxor_store_units_per_resource(mddev_t *mddev, const char *page, size_t len)
 	if (new == 0)
 		return -EINVAL;
 
-	if (conf->resources != NULL) {
-		kfree(conf->resources);
-		conf->resources = NULL;
-	}
-
+	raidxor_safe_free_conf(conf);
 	conf->units_per_resource = new;
-
 	raidxor_try_configure_raid(conf);
 
 	return len;
@@ -104,14 +191,11 @@ raidxor_store_number_of_resources(mddev_t *mddev, const char *page, size_t len)
 	if (new == 0)
 		return -EINVAL;
 
-	if (conf->resources != NULL) {
-		kfree(conf->resources);
-		conf->resources = NULL;
-	}
-
+	WITHLOCKCONF(conf, {
+	raidxor_safe_free_conf(conf);
 	conf->n_resources = new;
-
 	raidxor_try_configure_raid(conf);
+	});
 
 	return len;
 }
@@ -144,9 +228,9 @@ raidxor_encoding = __ATTR(encoding, S_IRUGO | S_IWUSR,
 			  raidxor_store_encoding);
 
 static struct attribute *raidxor_attrs[] = {
-	&raidxor_number_of_resources,
-	&raidxor_units_per_resource,
-	&raidxor_encoding,
+	(struct attribute *) &raidxor_number_of_resources,
+	(struct attribute *) &raidxor_units_per_resource,
+	(struct attribute *) &raidxor_encoding,
 	NULL
 };
 
@@ -154,13 +238,6 @@ static struct attribute_group raidxor_attrs_group = {
 	.name = NULL,
 	.attrs = raidxor_attrs,
 };
-
-static void check_raid_parameters(raidxor_conf_t *conf)
-{
-	spin_lock(&conf->device_lock);
-	conf->configured = 0;
-	spin_unlock(&conf->device_lock);
-}
 
 
 
@@ -171,7 +248,7 @@ static int raidxor_run(mddev_t *mddev)
 	mdk_rdev_t* rdev;
 	char buffer[32];
 	sector_t size;
-	unsigned int i;
+	unsigned long i;
 
 	printk (KERN_INFO "raidxor: ignoring mddev->chunk_size\n");
 
@@ -208,15 +285,14 @@ static int raidxor_run(mddev_t *mddev)
 	printk(KERN_INFO "raidxor: FIXME: assuming devices in linear order\n");
 
 	size = -1; /* in sectors, that is 1024 byte (or 512? find out!)*/
+
 	i = 0;
 	rdev_for_each(rdev, tmp, mddev) {
 		size = min(size, rdev->size);
 
 		printk(KERN_INFO "raidxor: rdev %s, %llu\n", bdevname(rdev->bdev, buffer),
 			(unsigned long long) rdev->size);
-#if 0
-		conf->disks[i].rdev = rdev;
-#endif
+		conf->units[i].rdev = rdev;
 
 		++i;
 	}

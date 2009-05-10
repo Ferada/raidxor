@@ -56,7 +56,7 @@ struct disk_info {
  */
 struct encoding {
 	unsigned int n_units;
-	disk_info_t units[0];
+	disk_info_t *units[0];
 };
 
 
@@ -70,7 +70,7 @@ struct encoding {
  */
 struct raidxor_resource {
 	unsigned int n_units;
-	disk_info_t units[0];
+	disk_info_t *units[0];
 };
 
 
@@ -86,7 +86,7 @@ struct raidxor_resource {
  */
 struct stripe {
 	unsigned int n_units;
-	disk_info_t units[0];
+	disk_info_t *units[0];
 };
 
 
