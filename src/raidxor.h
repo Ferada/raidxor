@@ -95,6 +95,7 @@ struct stripe {
  * struct raidxor_private_data_s - private data per mddev
  * @mddev: the mddev we are associated to
  * @device_lock: lock for exclusive access to this raid
+ * @handle_list: requests needing handling
  * @configured: is 1 if we have all necessary information
  * @units_per_resource: the number of units per resource
  * @n_resources: the number of resources
@@ -114,6 +115,8 @@ struct raidxor_private_data_s {
 
 	/* not yet used */
 	//struct bio_list pending_bio_list;
+
+	struct list_head handle_list;
 
 	unsigned int configured;
 
@@ -136,18 +139,24 @@ struct raidxor_private_data_s {
  * struct raidxor_bio - private information for bio transfers from and to stripes
  * @remaining: the number of remaining transfers
  * @mddev: the raid device
+ * @unit: extra information from raidxor
  * @master_bio: the bio which was sent to the raid device
  * @bios: the bios to the individual units
  *
  * If remaining reaches zero, the whole transfer is finished.
  */
 struct raidxor_bio {
+	struct list_head lru;
+
 	atomic_t remaining;
 	mddev_t *mddev;
+
+	disk_info_t *unit;
 
 	/* original bio going to /dev/mdX */
 	struct bio *master_bio;
 
+	unsigned long n_bios;
 	struct bio *bios[0];
 };
 

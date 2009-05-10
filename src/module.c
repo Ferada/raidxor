@@ -243,115 +243,6 @@ static struct attribute_group raidxor_attrs_group = {
 
 
 
-static int raidxor_run(mddev_t *mddev)
-{
-	raidxor_conf_t *conf;
-	struct list_head *tmp;
-	mdk_rdev_t* rdev;
-	char buffer[32];
-	sector_t size;
-	unsigned long i;
-
-	printk (KERN_INFO "raidxor: FIXME: ignoring mddev->chunk_size\n");
-
-	if (mddev->level != LEVEL_XOR) {
-		printk(KERN_ERR "raidxor: %s: raid level not set to xor (%d)\n",
-		       mdname(mddev), mddev->level);
-		goto out_inval;
-	}
-
-	printk(KERN_INFO "raidxor: raid set %s active with %d disks\n",
-	       mdname(mddev), mddev->raid_disks);
-
-	if (mddev->raid_disks < 1)
-		goto out_inval;
-
-	conf = kzalloc(sizeof(raidxor_conf_t) +
-		       sizeof(struct disk_info) * mddev->raid_disks, GFP_KERNEL);
-	mddev->private = conf;
-	if (!conf)
-		goto out_no_mem;
-
-	conf->configured = 0;
-	conf->mddev = mddev;
-	conf->units_per_resource = 0;
-	conf->n_resources = 0;
-	conf->resources = NULL;
-	conf->n_stripes = 0;
-	conf->stripes = NULL;
-	conf->n_units = mddev->raid_disks;
-
-	spin_lock_init(&conf->device_lock);
-	mddev->queue->queue_lock = &conf->device_lock;
-
-	size = -1; /* in sectors, that is 1024 byte */
-
-	i = conf->n_units - 1;
-	rdev_for_each(rdev, tmp, mddev) {
-		size = min(size, rdev->size);
-
-		printk(KERN_INFO "raidxor: device %lu rdev %s, %llu blocks\n",
-		       i, bdevname(rdev->bdev, buffer),
-		       (unsigned long long) rdev->size / 2);
-		conf->units[i].rdev = rdev;
-
-		--i;
-	}
-	if (size == -1)
-		goto out_inval;
-	mddev->size = size;
-	mddev->array_sectors = size;
-
-	printk (KERN_INFO "raidxor: array_sectors is %llu blocks\n",
-		(unsigned long long) mddev->array_sectors / 2);
-
-	/* Ok, everything is just fine now */
-	if (sysfs_create_group(&mddev->kobj, &raidxor_attrs_group)) {
-		printk(KERN_ERR
-		       "raidxor: failed to create sysfs attributes for %s\n",
-		       mdname(mddev));
-		goto out_free_conf;
-	}
-
-	return 0;
-
-out_no_mem:
-	printk(KERN_ERR "raidxor: couldn't allocate memory for %s\n",
-	       mdname(mddev));
-
-out_free_conf:
-	if (conf) {
-		kfree(conf);
-		mddev_to_conf(mddev) = NULL;
-	}
-out:
-	return -EIO;
-
-out_inval:
-	return -EINVAL;
-}
-
-static int raidxor_stop(mddev_t *mddev)
-{
-	raidxor_conf_t *conf = mddev_to_conf(mddev);
-
-	sysfs_remove_group(&mddev->kobj, &raidxor_attrs_group);
-
-	mddev_to_conf(mddev) = NULL;
-	raidxor_safe_free_conf(conf);
-	kfree(conf);
-
-	return 0;
-}
-
-static void raidxor_status(struct seq_file *seq, mddev_t *mddev)
-{
-	raidxor_conf_t *conf = mddev_to_conf(mddev);
-
-	seq_printf(seq, " I'm feeling fine");
-	return;
-}
-
 static void raidxor_end_read_request(struct bio *bio, int error)
 {
 	raidxor_bio_t *rxbio = (raidxor_bio_t *)(bio->bi_private);
@@ -416,14 +307,213 @@ static void raidxor_end_read_request(struct bio *bio, int error)
 	bio_put(bio);
 }
 
+static int raidxor_prepare_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
+{
+	unsigned long i, j;
+	struct bio *rbio;
+	struct page *page;
+	unsigned int npages, size;
+
+	npages = size / PAGE_SIZE + (size % PAGE_SIZE) ? 1 : 0;
+	printk(KERN_INFO "raidxor: into requests of size %llu a %u pages\n",
+	       (unsigned long long) size, npages);
+
+	for (i = 0; i < conf->n_resources; ++i) {
+		rbio = bio_alloc(GFP_NOIO, npages);
+		if (!rbio)
+			goto out_free_pages;
+		rxbio->bios[i] = rbio;
+
+		rbio->bi_rw = READ;
+		rbio->bi_private = rxbio;
+
+		rbio->bi_bdev = conf->units[i].rdev->bdev;
+		rbio->bi_sector = rxbio->master_bio->bi_sector / conf->n_resources +
+			conf->units[i].rdev->data_offset;
+		rbio->bi_size = size;
+
+		printk(KERN_INFO "raidxor: request %lu goes to physical sector %llu\n",
+		       i, (unsigned long long) rbio->bi_sector);
+
+		rbio->bi_end_io = raidxor_end_read_request;
+
+		for (j = 0; j < npages; ++j) {
+			page = alloc_page(GFP_NOIO);
+			if (!page)
+				goto out_free_pages;
+			rbio->bi_io_vec[j].bv_page = page;
+			rbio->bi_io_vec[j].bv_len = PAGE_SIZE;
+			rbio->bi_io_vec[j].bv_offset = j * PAGE_SIZE;
+		}
+	}
+	return 0;
+out_free_pages:
+	for (i = 0; i < conf->n_resources; ++i)
+		if (rxbio->bios[i]) {
+			for (j = 0; j < npages; ++j)
+				safe_put_page(rxbio->bios[i]->bi_io_vec[j].bv_page);
+			bio_put(rxbio->bios[i]);
+		}
+	return 1;
+}
+
+static void raidxord(mddev_t *mddev)
+{
+	raidxor_conf_t *conf = mddev_to_conf(mddev);
+	int unplug = 0;
+	raidxor_bio_t *rxbio;
+	unsigned long i;
+
+	printk(KERN_INFO "raidxor: raidxord active\n");
+
+	spin_lock(&conf->device_lock);
+	for (;;) {
+		if (list_empty(&conf->handle_list)) {
+			break;
+		}
+		rxbio = list_entry(conf->handle_list.next, typeof(*rxbio), lru);
+		list_del_init(&rxbio->lru);
+
+		spin_unlock(&conf->device_lock);
+		for (i = 0; i < rxbio->n_bios; ++i)
+			generic_make_request(rxbio->bios[i]);
+		spin_lock(&conf->device_lock);
+	}
+	spin_unlock(&conf->device_lock);
+
+	printk(KERN_INFO "raidxor: raidxord inactive\n");
+}
+
+static int raidxor_run(mddev_t *mddev)
+{
+	raidxor_conf_t *conf;
+	struct list_head *tmp;
+	mdk_rdev_t* rdev;
+	char buffer[32];
+	sector_t size;
+	unsigned long i;
+
+	printk (KERN_INFO "raidxor: FIXME: ignoring mddev->chunk_size\n");
+
+	if (mddev->level != LEVEL_XOR) {
+		printk(KERN_ERR "raidxor: %s: raid level not set to xor (%d)\n",
+		       mdname(mddev), mddev->level);
+		goto out_inval;
+	}
+
+	printk(KERN_INFO "raidxor: raid set %s active with %d disks\n",
+	       mdname(mddev), mddev->raid_disks);
+
+	if (mddev->raid_disks < 1)
+		goto out_inval;
+
+	conf = kzalloc(sizeof(raidxor_conf_t) +
+		       sizeof(struct disk_info) * mddev->raid_disks, GFP_KERNEL);
+	mddev->private = conf;
+	if (!conf) {
+		printk(KERN_ERR "raidxor: couldn't allocate memory for %s\n",
+		       mdname(mddev));
+		goto out;
+	}
+
+	conf->configured = 0;
+	conf->mddev = mddev;
+	conf->units_per_resource = 0;
+	conf->n_resources = 0;
+	conf->resources = NULL;
+	conf->n_stripes = 0;
+	conf->stripes = NULL;
+	conf->n_units = mddev->raid_disks;
+
+	spin_lock_init(&conf->device_lock);
+	mddev->queue->queue_lock = &conf->device_lock;
+
+	INIT_LIST_HEAD(&conf->handle_list);
+
+	size = -1; /* in sectors, that is 1024 byte */
+
+	i = conf->n_units - 1;
+	rdev_for_each(rdev, tmp, mddev) {
+		size = min(size, rdev->size);
+
+		//index = rdev->raid_disk;
+
+		printk(KERN_INFO "raidxor: device %lu rdev %s, %llu blocks\n",
+		       i, bdevname(rdev->bdev, buffer),
+		       (unsigned long long) rdev->size / 2);
+		conf->units[i].rdev = rdev;
+
+		--i;
+	}
+	if (size == -1)
+		goto out_free_conf;
+	mddev->size = size;
+	mddev->array_sectors = size;
+
+	printk (KERN_INFO "raidxor: array_sectors is %llu blocks\n",
+		(unsigned long long) mddev->array_sectors / 2);
+
+	/* Ok, everything is just fine now */
+	if (sysfs_create_group(&mddev->kobj, &raidxor_attrs_group)) {
+		printk(KERN_ERR
+		       "raidxor: failed to create sysfs attributes for %s\n",
+		       mdname(mddev));
+		goto out_free_conf;
+	}
+
+	mddev->thread = md_register_thread(raidxord, mddev, "%s_raidxor");
+	if (!mddev->thread) {
+		printk(KERN_ERR
+		       "raidxor: couldn't allocate thread for %s\n",
+		       mdname(mddev));
+		goto out_free_sysfs;
+	}
+
+	return 0;
+
+out_free_sysfs:
+	sysfs_remove_group(&mddev->kobj, &raidxor_attrs_group);
+
+out_free_conf:
+	if (conf) {
+		kfree(conf);
+		mddev_to_conf(mddev) = NULL;
+	}
+out:
+	return -EIO;
+
+out_inval:
+	return -EINVAL;
+}
+
+static int raidxor_stop(mddev_t *mddev)
+{
+	raidxor_conf_t *conf = mddev_to_conf(mddev);
+
+	md_unregister_thread(mddev->thread);
+	mddev->thread = NULL;
+
+	sysfs_remove_group(&mddev->kobj, &raidxor_attrs_group);
+
+	mddev_to_conf(mddev) = NULL;
+	raidxor_safe_free_conf(conf);
+	kfree(conf);
+
+	return 0;
+}
+
+static void raidxor_status(struct seq_file *seq, mddev_t *mddev)
+{
+	raidxor_conf_t *conf = mddev_to_conf(mddev);
+
+	seq_printf(seq, " I'm feeling fine");
+	return;
+}
+
 static int raidxor_make_request(struct request_queue *q, struct bio *bio) {
 	mddev_t *mddev = q->queuedata;
 	raidxor_conf_t *conf = mddev_to_conf(mddev);
 	const int rw = bio_data_dir(bio);
-	unsigned int npages, size;
-	struct bio *rbio;
-	struct page *page;
-	unsigned long flags;
 	raidxor_bio_t *rxbio;
 	int i, j;
 
@@ -441,70 +531,27 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio) {
 
 		/* TODO: create a pool for this */
 		//rxbio = mempool_alloc(conf->rxbio_pool, GFP_NOIO);
-#if 0
-		rxbio = kzalloc(sizeof(raidxor_bio) +
-				sizeof(struct bio *) * conf->n_data_disks, GFP_NOIO);
-#endif
+
+		rxbio = kzalloc(sizeof(raidxor_bio_t) +
+				sizeof(struct bio *) * conf->n_resources, GFP_NOIO);
 		if (!rxbio)
 			goto out_free_rxbio;
+
 		rxbio->master_bio = bio;
 		rxbio->mddev = mddev;
+		rxbio->n_bios = conf->n_resources;
 
 #if 0
 		/* reading at most one sector more then necessary on (each disk - 1) */
 		size = 512 * ((bio->bi_size / 512) / conf->n_data_disks +
 			      ((bio->bi_size / 512) % conf->n_data_disks) ? 1 : 0);
 #endif
-		npages = size / PAGE_SIZE + (size % PAGE_SIZE) ? 1 : 0;
-		printk(KERN_INFO "raidxor: into requests of size %llu a %u pages\n",
-		       (unsigned long long) size, npages);
+		atomic_set(&rxbio->remaining, rxbio->n_bios);
 
-		atomic_set(&rxbio->remaining, 0);
-
-#if 0
-		for (i = 0; i < conf->n_data_disks; ++i) {
-			rbio = bio_alloc(GFP_NOIO, npages);
-			if (!rbio)
-				goto out_free_pages;
-			rxbio->bios[i] = rbio;
-
-			rbio->bi_rw = READ;
-			rbio->bi_private = rxbio;
-
-			rbio->bi_bdev = conf->disks[i].rdev->bdev;
-			rbio->bi_sector = bio->bi_sector / conf->n_data_disks +
-				conf->disks[i].rdev->data_offset;
-			rbio->bi_size = size;
-
-			printk(KERN_INFO "raidxor: request %d goes to physical sector %llu\n",
-			       i, (unsigned long long) rbio->bi_sector);
-
-			rbio->bi_end_io = raidxor_end_read_request;
-
-			for (j = 0; j < npages; ++j) {
-				page = alloc_page(GFP_NOIO);
-				if (!page)
-					goto out_free_pages;
-				rbio->bi_io_vec[j].bv_page = page;
-				rbio->bi_io_vec[j].bv_len = PAGE_SIZE;
-				rbio->bi_io_vec[j].bv_offset = j * PAGE_SIZE;
-			}
-		}
-
-		for (i = 0; i < conf->n_data_disks; ++i) {
-			atomic_inc(&rxbio->remaining);
-			generic_make_request(rxbio->bios[i]);
-		}
+		list_add_tail(&rxbio->lru, &conf->handle_list);
+		md_wakeup_thread(conf->mddev->thread);
 
 		return 0;
-	out_free_pages:
-		for (i = 0; i < conf->n_data_disks; ++i)
-			if (rxbio->bios[i]) {
-				for (j = 0; j < npages; ++j)
-					safe_put_page(rxbio->bios[i]->bi_io_vec[j].bv_page);
-				bio_put(rxbio->bios[i]);
-			}
-#endif
 	out_free_rxbio:
 		kfree(rxbio);
 
@@ -538,17 +585,6 @@ out:
 	bio_io_error(bio);
 	return 0;
 }
-
-#if 0
-static void raidxord(mddev_t *mddev) {
-	raidxor_conf_t *conf = mddev_to_conf(mddev);
-	int unplug = 0;
-
-	for (;;) {
-		flush_pending_io(conf);
-	}
-}
-#endif
 
 static struct mdk_personality raidxor_personality =
 {
