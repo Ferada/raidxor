@@ -307,15 +307,34 @@ static void raidxor_end_read_request(struct bio *bio, int error)
 	bio_put(bio);
 }
 
-static int raidxor_prepare_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
+/**
+ * raidxor_prepare_read_bio() - build several bios from one request
+ *
+ * The basic assumption is that we don't cross a stripe boundary (which
+ * will be enforced by another function).
+ *
+ * We split according to mddev->chunk_size.
+ */
+static int raidxor_prepare_read_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
 {
 	unsigned long i, j;
-	struct bio *rbio;
+	struct bio *mbio, *rbio;
 	struct page *page;
-	unsigned int npages, size;
+	unsigned long npages, size;
+	unsigned long chunk_size = conf->chunk_size;
 
+	mbio = rxbio->master_bio;
+
+	printk(KERN_INFO "raidxor: splitting from sector %llu, %llu bytes\n",
+	       (unsigned long long) mbio->bi_sector,
+	       (unsigned long long) mbio->bi_size);
+
+	/* reading at most one sector more then necessary on (each disk - 1) */
+	size = chunk_size *
+		((mbio->bi_size / chunk_size) / conf->n_resources +
+		 ((mbio->bi_size / chunk_size) % conf->n_resources) ? 1 : 0);
 	npages = size / PAGE_SIZE + (size % PAGE_SIZE) ? 1 : 0;
-	printk(KERN_INFO "raidxor: into requests of size %llu a %u pages\n",
+	printk(KERN_INFO "raidxor: splitting into requests of size %llu a %lu pages\n",
 	       (unsigned long long) size, npages);
 
 	for (i = 0; i < conf->n_resources; ++i) {
@@ -346,6 +365,7 @@ static int raidxor_prepare_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
 			rbio->bi_io_vec[j].bv_offset = j * PAGE_SIZE;
 		}
 	}
+
 	return 0;
 out_free_pages:
 	for (i = 0; i < conf->n_resources; ++i)
@@ -393,11 +413,16 @@ static int raidxor_run(mddev_t *mddev)
 	sector_t size;
 	unsigned long i;
 
-	printk (KERN_INFO "raidxor: FIXME: ignoring mddev->chunk_size\n");
-
 	if (mddev->level != LEVEL_XOR) {
 		printk(KERN_ERR "raidxor: %s: raid level not set to xor (%d)\n",
 		       mdname(mddev), mddev->level);
+		goto out_inval;
+	}
+
+	if (mddev->chunk_size < PAGE_SIZE) {
+		printk(KERN_ERR "raidxor: chunk_size must be at least "
+		       "PAGE_SIZE but %d < %ld\n",
+		       mddev->chunk_size, PAGE_SIZE);
 		goto out_inval;
 	}
 
@@ -427,6 +452,7 @@ static int raidxor_run(mddev_t *mddev)
 
 	spin_lock_init(&conf->device_lock);
 	mddev->queue->queue_lock = &conf->device_lock;
+	blk_queue_hardsect_size(mddev->queue, PAGE_SIZE);
 
 	INIT_LIST_HEAD(&conf->handle_list);
 
@@ -447,7 +473,9 @@ static int raidxor_run(mddev_t *mddev)
 	}
 	if (size == -1)
 		goto out_free_conf;
-	mddev->size = size;
+
+	/* device size must a multiple of chunk size */
+	mddev->size = size & ~(mddev->chunk_size / 1024 - 1);
 	mddev->array_sectors = size;
 
 	printk (KERN_INFO "raidxor: array_sectors is %llu blocks\n",
@@ -521,9 +549,6 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio) {
 
 	goto out;
 
-	printk(KERN_INFO "raidxor: splitting from sector %llu, %llu bytes\n",
-	       (unsigned long long) bio->bi_sector, (unsigned long long) bio->bi_size);
-
 	/* we don't handle read requests yet */
 	/* apparently, we do have to handle them ... */
 	if (rw == READ) {
@@ -541,11 +566,6 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio) {
 		rxbio->mddev = mddev;
 		rxbio->n_bios = conf->n_resources;
 
-#if 0
-		/* reading at most one sector more then necessary on (each disk - 1) */
-		size = 512 * ((bio->bi_size / 512) / conf->n_data_disks +
-			      ((bio->bi_size / 512) % conf->n_data_disks) ? 1 : 0);
-#endif
 		atomic_set(&rxbio->remaining, rxbio->n_bios);
 
 		list_add_tail(&rxbio->lru, &conf->handle_list);

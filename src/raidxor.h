@@ -95,6 +95,7 @@ struct stripe {
  * struct raidxor_private_data_s - private data per mddev
  * @mddev: the mddev we are associated to
  * @device_lock: lock for exclusive access to this raid
+ * @chunk_size: copied from mddev_t
  * @handle_list: requests needing handling
  * @configured: is 1 if we have all necessary information
  * @units_per_resource: the number of units per resource
@@ -110,6 +111,8 @@ struct stripe {
 struct raidxor_private_data_s {
 	mddev_t *mddev;
 	spinlock_t device_lock;
+
+	unsigned long chunk_size;
 
 	//mempool_t *rxbio_pool;
 
