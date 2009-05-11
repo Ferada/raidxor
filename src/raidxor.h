@@ -130,10 +130,10 @@ struct raidxor_private_data_s {
 
 	unsigned long units_per_resource;
 	unsigned long n_resources;
-	raidxor_resource_t *resources;
+	raidxor_resource_t **resources;
 
 	unsigned long n_stripes;
-	stripe_t *stripes;
+	stripe_t **stripes;
 
 	unsigned long n_units;
 	disk_info_t units[0];
@@ -147,6 +147,8 @@ struct raidxor_private_data_s {
  * struct raidxor_bio - private information for bio transfers from and to stripes
  * @remaining: the number of remaining transfers
  * @mddev: the raid device
+ * @stripe: the stripe this bio is transfering from or to
+ * @sector: the virtual sector address inside that stripe
  * @unit: extra information from raidxor
  * @master_bio: the bio which was sent to the raid device
  * @bios: the bios to the individual units
@@ -160,6 +162,7 @@ struct raidxor_bio {
 	mddev_t *mddev;
 
 	stripe_t *stripe;
+	sector_t sector;
 
 	/* original bio going to /dev/mdX */
 	struct bio *master_bio;
