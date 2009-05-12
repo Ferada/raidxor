@@ -261,6 +261,16 @@ units_per_resource = 0
 def block_name (device):
     return os.path.basename (device)
 
+def generate_encoding_shell_script (out):
+    for i in range (0, len (units)):
+        if not units[i].redundant:
+            continue
+
+        out.write ("""echo -en '\\0%s\\0%s""" % (oct (i), oct (len (units[i].encoding))))
+        for unit in units[i].encoding:
+            out.write ("""\\0%s""" % (oct (units.index (unit))))
+        out.write ("'\n")
+
 def generate_stop_shell_script (out):
     out.write (
 """#!/bin/sh
@@ -288,6 +298,8 @@ if [[ $? -eq 0 ]]; then exit; fi
 echo %s > /sys/block/%s/md/number_of_resources
 echo %s > /sys/block/%s/md/units_per_resource
 """ % (len (resources), block_name (raid_device), len (resources[0].units), block_name (raid_device)))
+
+    generate_encoding_shell_script (out)
 
 files = []
 if opts.script:
