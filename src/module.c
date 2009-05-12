@@ -409,6 +409,10 @@ static void raidxor_end_read_request(struct bio *bio, int error)
 	stripe_t *stripe = rxbio->stripe;
 	unsigned long length;
 
+	printk(KERN_INFO "raidxor_end_read_request\n");
+
+	goto out;
+
 	for (i = 0, index = 0; i < stripe->n_units; ++i) {
 		if (stripe->units[i]->redundant == 0)
 			++index;
@@ -468,7 +472,7 @@ static void raidxor_end_read_request(struct bio *bio, int error)
 
 out:
 	if (atomic_dec_and_test(&rxbio->remaining)) {
-		bio_endio(rxbio->master_bio, 0);
+		bio_endio(mbio, 0);
 		kfree(rxbio);
 	}
 
