@@ -158,7 +158,7 @@ struct raidxor_private_data_s {
 struct raidxor_bio {
 	struct list_head lru;
 
-	atomic_t remaining;
+	unsigned long remaining;
 	mddev_t *mddev;
 
 	stripe_t *stripe;

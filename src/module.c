@@ -471,15 +471,19 @@ static void raidxor_end_read_request(struct bio *bio, int error)
 	}
 
 out:
-	if (atomic_dec_and_test(&rxbio->remaining)) {
+	for (i = 0; i < bio->bi_vcnt; ++i)
+		safe_put_page(bio->bi_io_vec[i].bv_page);
+	bio_put(bio);
+
+	printk(KERN_INFO "put page, remaining %lu\n", rxbio->remaining);
+
+	if (rxbio->remaining == 0) {
 		bio_endio(mbio, 0);
 		kfree(rxbio);
 	}
-
-	for (i = 0; i < bio->bi_vcnt; ++i)
-		safe_put_page(bio->bi_io_vec[i].bv_page);
-
-	bio_put(bio);
+	else {
+		--rxbio->remaining;
+	}
 }
 
 static void raidxor_free_bios(raidxor_bio_t *rxbio)
@@ -830,7 +834,7 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 		rxbio->mddev = mddev;
 		rxbio->stripe = stripe;
 		rxbio->sector = newsector;
-		atomic_set(&rxbio->remaining, rxbio->n_bios);
+		rxbio->remaining = rxbio->n_bios;
 
 		list_add_tail(&rxbio->lru, &conf->handle_list);
 		md_wakeup_thread(conf->mddev->thread);
