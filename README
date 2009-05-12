@@ -8,6 +8,5 @@ variable de-/encoding using XOR equations.
 Ein Metamodul für den md-Treiber des Linux-Kernels das variable
 De-/Kodierung über XOR-Gleichungen unterstützt.
 
-Contributors
-------------
-- Olof-Joachim Frahm <Olof.Frahm@web.de>
+License: GPLv3
+Author: Olof-Joachim Frahm <Olof.Frahm@web.de>
