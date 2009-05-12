@@ -163,6 +163,7 @@ struct raidxor_bio {
 
 	stripe_t *stripe;
 	sector_t sector;
+	unsigned long length;
 
 	/* original bio going to /dev/mdX */
 	struct bio *master_bio;

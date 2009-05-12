@@ -369,28 +369,73 @@ static struct attribute_group raidxor_attrs_group = {
 };
 
 
+static void raidxor_scatter_copy_data(struct bio *bioto, struct bio *biofrom,
+				      unsigned long length, unsigned long offset,
+				      unsigned long raster)
+{
+	
+}
+
+static unsigned long raidxor_compute_length(raidxor_conf_t *conf,
+					    stripe_t *stripe,
+					    struct bio *mbio,
+					    unsigned long index)
+{
+	/* copy this for every unit in the stripe */
+	unsigned long result = (mbio->bi_size / (conf->chunk_size * stripe->n_data_units))
+		* conf->chunk_size;
+
+	unsigned long over = mbio->bi_size % (conf->chunk_size *
+					      stripe->n_data_units);
+
+	/* now, this is under n_data_units * chunk_size, so lets deal with it,
+	   if we have more than a full strip, copy those bytes from the
+	   remaining units, but really only what we need */
+	if (over > index * conf->chunk_size)
+		result += min(conf->chunk_size, over - index * conf->chunk_size);
+
+	return result;
+}
 
 static void raidxor_end_read_request(struct bio *bio, int error)
 {
 	raidxor_bio_t *rxbio = (raidxor_bio_t *)(bio->bi_private);
 	raidxor_conf_t *conf = mddev_to_conf(rxbio->mddev);
-	unsigned int i, j, index;
+	unsigned long i, j, index;
 	struct bio *mbio = rxbio->master_bio;
 	struct bio_vec *bvfrom, *bvto;
-	int from_offset, to_offset;
+	unsigned long from_offset, to_offset;
 	char *mapped;
+	stripe_t *stripe = rxbio->stripe;
+	unsigned long length;
 
-#if 0
-	for (index = 0; index < conf->n_data_disks; ++index) {
-		if (conf->disks[index].rdev->bdev == bio->bi_bdev)
+	for (i = 0, index = 0; i < stripe->n_units; ++i) {
+		if (stripe->units[i]->redundant == 0)
+			++index;
+		if (stripe->units[i]->rdev->bdev == bio->bi_bdev)
 			break;
 	}
-#endif
+
 	/* offset for the copy operations */
-	to_offset = index * 512;
+	to_offset = index * conf->chunk_size;
+
+	/* if we don't have something to copy, do nothing.
+	   even better: move this check to make_request :) */
+	if (to_offset >= bio->bi_size)
+		goto out;
+
+	length = raidxor_compute_length(conf, stripe, mbio, index);
+
+	printk(KERN_INFO "raidxor_end_read_request: %lu will copy %lu bytes,"
+	       " or %lu blocks to mbio\n", index, length, length >> 9);
+
+	goto out;
+
+	raidxor_scatter_copy_data(mbio, bio, length, to_offset,
+				  conf->chunk_size);
 
 	/* the data which the master bio wants, is partially in the pages
-	   of this bio, therefore we copy it */
+	   of this bio, lets seek the approriate place where to put it */
 	i = 0;
 	bvto = bio_iovec_idx(mbio, i);
 	for (; to_offset >= bvto->bv_len;) {
@@ -398,33 +443,32 @@ static void raidxor_end_read_request(struct bio *bio, int error)
 		bvto = bio_iovec_idx(mbio, ++i);
 	}
 
-	/* copy chunks of 512 bytes, advancing bvfrom and bvto when
-	   necessary */
 	j = 0;
 	from_offset = 0;
 	bvfrom = bio_iovec_idx(bio, j);
+
+	/* copy chunks of PAGE_SIZE bytes, advancing bvfrom and bvto when
+	   necessary */
 	for (; i < bio->bi_vcnt;) {
 		mapped = __bio_kmap_atomic(mbio, i, KM_USER0);
 		memcpy(mapped + bvto->bv_offset + to_offset,
 		       bvfrom->bv_page + bvfrom->bv_offset + from_offset,
-		       512);
+		       PAGE_SIZE);
 		__bio_kunmap_atomic(mbio, KM_USER0);
 
-		from_offset += 512;
+		from_offset += PAGE_SIZE;
 		if (from_offset >= bvfrom->bv_len)
 			bvfrom = bio_iovec_idx(bio, ++j);
 
-#if 0
-		to_offset += conf->n_data_disks * 512;
-#endif
+		to_offset += stripe->n_data_units * PAGE_SIZE;
+
 		if (to_offset >= bvto->bv_len)
 			bvto = bio_iovec_idx(mbio, ++i);
 	}
 
+out:
 	if (atomic_dec_and_test(&rxbio->remaining)) {
 		bio_endio(rxbio->master_bio, 0);
-		/* TODO: create pool for this */
-		//mempool_free(rxbio, conf->rxbio_pool);
 		kfree(rxbio);
 	}
 
@@ -468,6 +512,8 @@ static int raidxor_prepare_read_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
 	printk(KERN_INFO "raidxor: splitting from sector %llu, %llu bytes\n",
 	       (unsigned long long) mbio->bi_sector,
 	       (unsigned long long) mbio->bi_size);
+
+	rxbio->n_bios = stripe->n_data_units;
 
 	/* reading at most one sector more then necessary on (each disk - 1) */
 	size = chunk_size *
@@ -573,12 +619,6 @@ static void raidxord(mddev_t *mddev)
 			printk(KERN_INFO "raidxor: unfinished request aborted\n");
 			continue;
 		}
-
-		// FIXME: if we have a useful prepare_read_bio, remove this
-		raidxor_free_bios(rxbio);
-		bio_io_error(rxbio->master_bio);
-		kfree(rxbio);
-		continue;
 
 		spin_unlock(&conf->device_lock);
 		for (i = 0; i < rxbio->n_bios; ++i)
@@ -786,7 +826,6 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 		rxbio->mddev = mddev;
 		rxbio->stripe = stripe;
 		rxbio->sector = newsector;
-		rxbio->n_bios = stripe->n_data_units;
 		atomic_set(&rxbio->remaining, rxbio->n_bios);
 
 		list_add_tail(&rxbio->lru, &conf->handle_list);
