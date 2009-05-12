@@ -3,29 +3,8 @@
 import sys, os, os.path, fileinput, re
 from optparse import OptionParser
 
-"""
-args:
-  --start	start the raid
-  --stop	stop the raid
-  --restart	restart the raid
-
-  -s, --script	generate shell script from specification
-  -e, --exec	execute the specification after reading
-
-format:
-
-RAID_DESCR /dev/md0, chunk_size
-
-RESOURCES r0,r1,...,rn
-RESOURCE_DESCR r0,device,u0,u3,...,un
-
-UNITS u0,u1,...,un
-UNIT_DESCR u0,device
-
-REDUNDANCY destunit = XOR(u1,u5,...,un)
-"""
-
 parser = OptionParser ()
+parser.set_defaults (mode = "start")
 parser.add_option ("--start", dest = "mode",
                    action = "store_const", const = "start",
                    help = "start the raid")
@@ -38,7 +17,7 @@ parser.add_option ("--restart", dest = "mode",
 parser.add_option ("-n", "--noscript", dest = "script",
                    action = "store_false", default = True,
                    help = "writes no shell script to stdout")
-parser.add_option ("-e", "--exec", dest = "exec",
+parser.add_option ("-e", "--exec", dest = "execute",
                    action = "store_true", default = False,
                    help = "executes the specification")
 parser.set_usage ("""Usage: conf.py [options]
@@ -51,12 +30,12 @@ The format for the specification is as follows:
   RAID_DESCR device, chunk_size
 
   RESOURCES r0, r1, ..., rn
-  RESOURCE_DESCR r0, device, u0, u1, ..., un
+  RESOURCE_DESCR r0, /dev/foo, u1, u3, ..., un
 
   UNITS u0, u1, ..., un
-  UNIT_DESCR u0, device
+  UNIT_DESCR u0, /dev/bar
 
-  REDUNDANCY destunit = XOR(u0, u1, ..., un)""")
+  REDUNDANCY destunit = XOR(u4, u2, ..., un)""")
 
 (opts, args) = parser.parse_args ()
 
@@ -220,7 +199,7 @@ for line in fileinput.input (["-"]):
     else:
         sys.stderr.write ("invalid line '%s'\n" % line)
 
-def check_double (list, desc):
+def check_double (list, desc, obj = None):
     num = {}
     def inc (key):
         if num.has_key (key):
@@ -230,7 +209,22 @@ def check_double (list, desc):
     [inc (res.name) for res in list]
     for key, value in num.iteritems ():
         if value != 1:
-            die ("double %s %s" % (desc, key))
+            if obj:
+                tmp = " for " + obj
+            else:
+                tmp = ""
+            die ("double %s %s%s" % (desc, key, tmp))
+
+def check_resources ():
+    for res in resources:
+        check_double (res.units, "unit", res.name)
+
+def check_units ():
+    for unit in units:
+        if not unit.redundant:
+            continue
+
+        check_double (unit.encoding, "encoding", unit.name)
 
 def check_raid ():
     if not raid_device:
@@ -239,24 +233,72 @@ def check_raid ():
         die ("no resources specified")
     if not units:
         die ("no units specified")
+    if chunk_size < 4096:
+        die ("chunk_size is smaller than the minimum 4096 bytes")
+    if chunk_size % 4096:
+        die ("chunk_size is no multiple of 4096 bytes")
 
-def generate_shell_script ():
-    sys.stdout.write (
+def check_rect_layout ():
+    l = len (resources[0].units)
+    for res in resources:
+        if len (res.units) != l:
+            die ("no rectangular layout, resource dimensions differ")
+    if len (units) != len (resources) * l:
+        die ("no rectangular layout, some units are amiss")
+
+convert_resources ()
+check_resources ()
+check_double (resources, "resource")
+check_double (units, "unit")
+check_units ()
+check_raid ()
+check_rect_layout ()
+
+global number_of_resources, units_per_resource
+number_of_resources = 0
+units_per_resource = 0
+
+def block_name (device):
+    return os.path.basename (device)
+
+def generate_stop_shell_script (out):
+    out.write (
 """#!/bin/sh
 
 MDADM=/home/rudolf/src/mdadm-2.6.8/mdadm
 
-$MDADM -v -v --create 
-""")
+$MDADM --manage %s -S
+""" % (raid_device))
 
-convert_resources ()
-check_double (resources, "resource")
-check_double (units, "unit")
-check_raid ()
+def generate_start_shell_script (out):
+    units_formatted = ""
+    for unit in units:
+        units_formatted += " " + unit.device
+    out.write (
+"""#!/bin/sh
 
-print raid_device
-print chunk_size
-print resources
-print units
+MDADM=/home/rudolf/src/mdadm-2.6.8/mdadm
+
+$MDADM -v -v --create %s -c %s --level=xor \\
+	--raid-devices=%s%s
+if [[ $? -eq 0 ]]; then exit; fi
+""" % (raid_device, chunk_size / 1024, len (units), units_formatted))
+    out.write (
+"""
+echo %s > /sys/block/%s/md/number_of_resources
+echo %s > /sys/block/%s/md/units_per_resource
+""" % (len (resources), block_name (raid_device), len (resources[0].units), block_name (raid_device)))
+
+files = []
+if opts.script:
+    files.append (sys.stdout)
+
+if opts.execute:
+    files.append (os.popen ("/bin/sh", "w"))
+
+if opts.mode == "stop" or opts.mode == "restart":
+    [generate_stop_shell_script (file) for file in files]
+if opts.mode == "start" or opts.mode == "start":
+    [generate_start_shell_script (file) for file in files]
 
 sys.exit (0)
