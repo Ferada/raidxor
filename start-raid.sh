@@ -7,5 +7,5 @@ do
     losetup /dev/loop$i disk-$i.img
 done
 
-$MDADM -v -v --create /dev/md0 -c 4 --level=xor \
-    --raid-devices=6 /dev/loop0 /dev/loop1 /dev/loop2 /dev/loop3 /dev/loop4 /dev/loop5
+#$MDADM -v -v --create /dev/md0 -c 4 --level=xor \
+#    --raid-devices=6 /dev/loop0 /dev/loop1 /dev/loop2 /dev/loop3 /dev/loop4 /dev/loop5

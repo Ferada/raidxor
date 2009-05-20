@@ -264,12 +264,12 @@ def block_name (device):
 def generate_encoding_shell_script (out):
     for i in range (0, len (units)):
         if not units[i].redundant:
-            continue
-
-        out.write ("""echo -en '\\0%s\\0%s""" % (oct (i), oct (len (units[i].encoding))))
-        for unit in units[i].encoding:
-            out.write ("""\\0%s""" % (oct (units.index (unit))))
-        out.write ("'\n")
+            out.write ("""echo -en '\\0%s\\00""" % (oct (i)))
+        else:
+            out.write ("""echo -en '\\0%s\\01\\0%s""" % (oct (i), oct (len (units[i].encoding))))
+            for unit in units[i].encoding:
+                out.write ("""\\0%s""" % (oct (units.index (unit))))
+        out.write ("' > /sys/block/%s/md/encoding\n" % (block_name (raid_device)))
 
 def generate_stop_shell_script (out):
     out.write (
@@ -289,17 +289,17 @@ def generate_start_shell_script (out):
 
 MDADM=/home/rudolf/src/mdadm-2.6.8/mdadm
 
-$MDADM -v -v --create %s -c %s --level=xor \\
+$MDADM -v -v --create %s -R -c %s --level=xor \\
 	--raid-devices=%s%s
-if [[ $? -eq 0 ]]; then exit; fi
+if [[ ! $? -eq 0 ]]; then exit; fi
+
 """ % (raid_device, chunk_size / 1024, len (units), units_formatted))
+    generate_encoding_shell_script (out)
     out.write (
 """
 echo %s > /sys/block/%s/md/number_of_resources
 echo %s > /sys/block/%s/md/units_per_resource
 """ % (len (resources), block_name (raid_device), len (resources[0].units), block_name (raid_device)))
-
-    generate_encoding_shell_script (out)
 
 files = []
 if opts.script:
