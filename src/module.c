@@ -21,7 +21,7 @@
  * Must be called inside conf lock.
  */
 static void raidxor_safe_free_conf(raidxor_conf_t *conf) {
-	unsigned long i, j;
+	unsigned long i;
 
 	if (!conf) {
 		printk(KERN_DEBUG "raidxor: NULL pointer "
@@ -174,6 +174,7 @@ out_free_res:
 out:
 	return;
 }
+
 static ssize_t
 raidxor_show_units_per_resource(mddev_t *mddev, char *page)
 {
@@ -273,7 +274,6 @@ static ssize_t
 raidxor_store_encoding(mddev_t *mddev, const char *page, size_t len)
 {
 	raidxor_conf_t *conf = mddev_to_conf(mddev);
-	unsigned long new;
 	unsigned char index, redundant, length, i, red;
 	encoding_t *encoding;
 	size_t oldlen = len;
@@ -368,12 +368,72 @@ static struct attribute_group raidxor_attrs_group = {
 	.attrs = raidxor_attrs,
 };
 
-
+/**
+ * Copies LENGTH bytes from BIOFROM to BIOTO.  Writing starts at OFFSET from
+ * the beginning of BIOTO and is performed at chunks of CHUNK_SIZE.  Data is
+ * written at every first block of RASTER chunks.
+ */
 static void raidxor_scatter_copy_data(struct bio *bioto, struct bio *biofrom,
-				      unsigned long length, unsigned long offset,
-				      unsigned long raster)
+				      unsigned long length, unsigned long to_offset,
+				      unsigned long chunk_size, unsigned int raster)
 {
-	
+	unsigned int i = 0, j = 0;
+	struct bio_vec *bvfrom = bio_iovec_idx(biofrom, i);
+	struct bio_vec *bvto = bio_iovec_idx(bioto, j);
+	char *mapped;
+	unsigned int clen = 0;
+	unsigned long from_offset = 0;
+	unsigned long to_copy = min(length, chunk_size);
+
+#define NEXT_BVFROM do { bvfrom = bio_iovec_idx(biofrom, ++i); } while (0)
+#define NEXT_BVTO do { bvto = bio_iovec_idx(bioto, ++j); } while (0)
+
+	/* adjust offset and the vector so we actually write inside it */
+	while (to_offset >= bvto->bv_len) {
+		to_offset -= bvto->bv_len;
+		NEXT_BVTO;
+	}
+
+	mapped = __bio_kmap_atomic(bioto, j, KM_USER0);
+	while (length > 0) {
+		clen = (to_copy > bvfrom->bv_len) ? to_copy : bvfrom->bv_len;
+		clen = (clen > bvto->bv_len) ? clen : bvto->bv_len;
+		//clen = min(min(to_copy, bvfrom->bv_len), bvto->bv_len);
+
+		memcpy(mapped + bvto->bv_offset + to_offset,
+		       bvfrom->bv_page + bvfrom->bv_offset + from_offset,
+		       clen);
+
+		to_copy -= clen;
+		length -= clen;
+		from_offset += clen;
+		to_offset += clen;
+
+		/* our chunk is not finished yet, so we adjust our pointers */
+		if (to_copy > 0) {
+			if (to_offset == bvto->bv_len) {
+				to_offset = 0;
+				NEXT_BVTO;
+			}
+		}
+		/* our chunk is finished, but we're still not done */
+		else if (length > 0) {
+			to_offset += (raster - 1) * chunk_size;
+
+			while (to_offset >= bvto->bv_len) {
+				to_offset -= bvto->bv_len;
+				NEXT_BVTO;
+			}
+		}
+		if (from_offset == bvfrom->bv_len) {
+			from_offset = 0;
+			NEXT_BVFROM;
+		}
+	}
+#undef NEXT_BVFROM
+#undef NEXT_BVTO
+
+	__bio_kunmap_atomic(bioto, KM_USER0);
 }
 
 static unsigned long raidxor_compute_length(raidxor_conf_t *conf,
@@ -433,44 +493,9 @@ static void raidxor_end_read_request(struct bio *bio, int error)
 	printk(KERN_INFO "raidxor_end_read_request: %lu will copy %lu bytes,"
 	       " or %lu blocks to mbio\n", index, length, length >> 9);
 
-	goto out;
-
 	raidxor_scatter_copy_data(mbio, bio, length, to_offset,
-				  conf->chunk_size);
+				  conf->chunk_size, stripe->n_data_units);
 
-	/* the data which the master bio wants, is partially in the pages
-	   of this bio, lets seek the approriate place where to put it */
-	i = 0;
-	bvto = bio_iovec_idx(mbio, i);
-	for (; to_offset >= bvto->bv_len;) {
-		to_offset -= bvto->bv_len;
-		bvto = bio_iovec_idx(mbio, ++i);
-	}
-
-	j = 0;
-	from_offset = 0;
-	bvfrom = bio_iovec_idx(bio, j);
-
-	/* copy chunks of PAGE_SIZE bytes, advancing bvfrom and bvto when
-	   necessary */
-	for (; i < bio->bi_vcnt;) {
-		mapped = __bio_kmap_atomic(mbio, i, KM_USER0);
-		memcpy(mapped + bvto->bv_offset + to_offset,
-		       bvfrom->bv_page + bvfrom->bv_offset + from_offset,
-		       PAGE_SIZE);
-		__bio_kunmap_atomic(mbio, KM_USER0);
-
-		from_offset += PAGE_SIZE;
-		if (from_offset >= bvfrom->bv_len)
-			bvfrom = bio_iovec_idx(bio, ++j);
-
-		to_offset += stripe->n_data_units * PAGE_SIZE;
-
-		if (to_offset >= bvto->bv_len)
-			bvto = bio_iovec_idx(mbio, ++i);
-	}
-
-out:
 	for (i = 0; i < bio->bi_vcnt; ++i)
 		safe_put_page(bio->bi_io_vec[i].bv_page);
 	bio_put(bio);
@@ -609,9 +634,8 @@ out_free_rxbio:
 static void raidxord(mddev_t *mddev)
 {
 	raidxor_conf_t *conf = mddev_to_conf(mddev);
-	int unplug = 0;
 	raidxor_bio_t *rxbio;
-	unsigned long i, j, handled = 0;
+	unsigned long i, handled = 0;
 
 	printk(KERN_INFO "raidxor: raidxord active\n");
 
@@ -807,7 +831,6 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 	raidxor_conf_t *conf = mddev_to_conf(mddev);
 	const int rw = bio_data_dir(bio);
 	raidxor_bio_t *rxbio;
-	int i, j;
 	stripe_t *stripe;
 	sector_t newsector;
 
