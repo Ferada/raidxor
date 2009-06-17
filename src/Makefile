@@ -1,6 +1,6 @@
 ifneq ($(KERNELRELEASE),)
 
-obj-m := test.o raidxor.o
+obj-m := test.o raidxor.o 
 
 raidxor-objs := module.o
 
@@ -13,4 +13,5 @@ all:
 
 clean:
 	$(MAKE) -C $(KDIR) SUBDIRS=$(PWD) clean
+
 endif

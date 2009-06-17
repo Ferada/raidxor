@@ -4,17 +4,6 @@
 
 #include "raidxor.h"
 
-#define LOCKCONF(conf) \
-	spin_lock(&conf->device_lock)
-
-#define UNLOCKCONF(conf) \
-	spin_unlock(&conf->device_lock)
-
-#define WITHLOCKCONF(conf,block) \
-	LOCKCONF(conf); \
-	do block while(0); \
-	UNLOCKCONF(conf);
-
 /**
  * raidxor_safe_free_conf() - frees resource and stripe information
  *
@@ -470,6 +459,7 @@ static void raidxor_end_write_request(struct bio *bio, int error)
 	raidxor_conf_t *conf = mddev_to_conf(rxbio->mddev);
 	struct bio *mbio = rxbio->master_bio;
 	stripe_t *stripe = rxbio->stripe;
+	unsigned long i;
 
 	printk(KERN_INFO "raidxor_end_write_request\n");
 
@@ -570,9 +560,10 @@ static void raidxor_free_bios(raidxor_bio_t *rxbio)
  */
 static int raidxor_prepare_write_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
 {
-	struct bbio *mbio = rxbio->master_bio;
+	struct bio *mbio = rxbio->master_bio, *rbio;
 	unsigned long chunk_size = conf->chunk_size;
 	stripe_t *stripe = rxbio->stripe;
+	unsigned long i, k;
 
 	goto out_free_rxbio;
 
@@ -583,7 +574,9 @@ static int raidxor_prepare_write_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
 	for (i = 0, k = 0; i < rxbio->n_bios; ++i) {
 		printk(KERN_INFO "loop %lu\n", i);
 
+#if 0
 		rbio = bio_alloc(GFP_NOIO, npages);
+#endif
 		if (!rbio) {
 			printk(KERN_INFO "couldn't allocate bio\n");
 			goto out_free_pages;
@@ -934,7 +927,7 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 
 	printk(KERN_INFO "raidxor: got request\n");
 
-	LOCKCONF(conf);
+LOCKCONF(conf);
 
 	stripe = raidxor_sector_to_stripe(conf, bio->bi_sector, &newsector);
 
@@ -956,7 +949,7 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 	list_add_tail(&rxbio->lru, &conf->handle_list);
 	md_wakeup_thread(conf->mddev->thread);
 
-	UNLOCKCONF(conf);
+UNLOCKCONF(conf);
 
 	if (rw == READ) {
 		printk (KERN_INFO "raidxor: handling read request\n");
@@ -992,7 +985,7 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 
 out:
 	bio_io_error(bio);
-	UNLOCKCONF(conf);
+UNLOCKCONF(conf);
 	return 0;
 }
 

@@ -141,6 +141,17 @@ struct raidxor_private_data_s {
 
 #define mddev_to_conf(mddev) (mddev->private)
 
+#define LOCKCONF(conf) \
+	spin_lock(&conf->device_lock)
+
+#define UNLOCKCONF(conf) \
+	spin_unlock(&conf->device_lock)
+
+#define WITHLOCKCONF(conf,block) \
+	LOCKCONF(conf); \
+	do block while(0); \
+	UNLOCKCONF(conf);
+
 
 
 /**
