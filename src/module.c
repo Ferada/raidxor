@@ -1,6 +1,7 @@
 #include <linux/version.h>
 #include <linux/module.h>
 #include <linux/init.h>
+#include <asm/div64.h>
 
 #include "raidxor.h"
 
@@ -673,14 +674,19 @@ static int raidxor_prepare_read_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
 
 		printk(KERN_INFO "raidxor: device is %lu\n", i + k);
 
-		rbio->bi_sector = stripe->units[i + k]->rdev->data_offset +
-			rxbio->sector / (chunk_size >> 9);
+		/* we need to use do_div here */
+		rbio->bi_sector = rxbio->sector;
+		do_div(rbio->bi_sector, chunk_size >> 9);
+		rbio->bi_sector += stripe->units[i + k]->rdev->data_offset;
+		//rbio->bi_sector = stripe->units[i + k]->rdev->data_offset +
+		//	rxbio->sector / (chunk_size >> 9);
+
 		//rbio->bi_sector = rxbio->master_bio->bi_sector / conf->n_resources +
 		//	conf->units[i].rdev->data_offset;
 		rbio->bi_size = size;
 		rbio->bi_vcnt = npages;
 
-		printk(KERN_INFO "raidxor: sector %lu, chunk_size >> 9 = %lu, data_offset %lu\n",
+		printk(KERN_INFO "raidxor: sector %llu, chunk_size >> 9 = %lu, data_offset %llu\n",
 		       rxbio->sector,
 		       chunk_size >> 9,
 		       stripe->units[i + k]->rdev->data_offset);
@@ -906,7 +912,7 @@ static stripe_t * raidxor_sector_to_stripe(raidxor_conf_t *conf, sector_t sector
 	       sectors_per_chunk);
 
 	for (i = 0; i < conf->n_stripes; ++i) {
-		printk(KERN_INFO "raidxor: stripe %lu, sector %lu\n", i, sector);
+		printk(KERN_INFO "raidxor: stripe %lu, sector %llu\n", i, sector);
 		if (sector <= stripes[i]->size >> 9)
 			break;
 		sector -= stripes[i]->size >> 9;
