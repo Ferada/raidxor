@@ -36,6 +36,12 @@ static void raidxor_safe_free_conf(raidxor_conf_t *conf) {
 	conf->configured = 0;
 }
 
+/**
+ * raidxor_try_configure_raid() - configures the raid
+ *
+ * Checks, if enough information was supplied through sysfs and if so,
+ * completes the configuration with the data.
+ */
 static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 	raidxor_resource_t **resources;
 	stripe_t **stripes;
@@ -366,6 +372,8 @@ static void raidxor_gather_copy_data(struct bio *bioto, struct bio *biofrom,
 }
 
 /**
+ * raidxor_scatter_copy_data() - scatters data from source to destination
+ *
  * Copies LENGTH bytes from BIOFROM to BIOTO.  Writing starts at OFFSET from
  * the beginning of BIOTO and is performed at chunks of CHUNK_SIZE.  Data is
  * written at every first block of RASTER chunks.
@@ -433,6 +441,12 @@ static void raidxor_scatter_copy_data(struct bio *bioto, struct bio *biofrom,
 	__bio_kunmap_atomic(bioto, KM_USER0);
 }
 
+/**
+ * raidxor_compute_length() - computes the number of bytes to be read
+ *
+ * That is, given the position and length in the virtual device, how
+ * many blocks do we actually have to copy from a single request.
+ */
 static unsigned long raidxor_compute_length(raidxor_conf_t *conf,
 					    stripe_t *stripe,
 					    struct bio *mbio,
@@ -454,6 +468,17 @@ static unsigned long raidxor_compute_length(raidxor_conf_t *conf,
 	return result;
 }
 
+static void raidxor_free_bios(raidxor_bio_t *rxbio)
+{
+	unsigned long i, j;
+	for (i = 0; i < rxbio->n_bios; ++i)
+		if (rxbio->bios[i]) {
+			for (j = 0; j < rxbio->bios[i]->bi_vcnt; ++j)
+				safe_put_page(rxbio->bios[i]->bi_io_vec[j].bv_page);
+			bio_put(rxbio->bios[i]);
+		}
+}
+
 static void raidxor_end_write_request(struct bio *bio, int error)
 {
 	raidxor_bio_t *rxbio = (raidxor_bio_t *)(bio->bi_private);
@@ -464,24 +489,34 @@ static void raidxor_end_write_request(struct bio *bio, int error)
 
 	printk(KERN_INFO "raidxor_end_write_request\n");
 
-	goto out;
+	if (rxbio->remaining == 0) {
 
-out:
 	for (i = 0; i < bio->bi_vcnt; ++i)
 		safe_put_page(bio->bi_io_vec[i].bv_page);
 	bio_put(bio);
 
+	--rxbio->remaining;
+
 	printk(KERN_INFO "put page, remaining %lu\n", rxbio->remaining);
 
 	if (rxbio->remaining == 0) {
-		bio_endio(mbio, 0);
+		raidxor_free_bios(rxbio);
 		kfree(rxbio);
-	}
-	else {
-		--rxbio->remaining;
+
+		bio_endio(mbio, 0);
 	}
 }
 
+/**
+ * raidxor_end_read_request() - combines read requests into master bio
+ *
+ * The single requests to each device end here.  The data is written
+ * to the pages of the master bio and the request is closed.
+ *
+ * If all requests are done, the master bio is subsequently finished.
+ *
+ * TODO: Error handling is missing for now.
+ */
 static void raidxor_end_read_request(struct bio *bio, int error)
 {
 	raidxor_bio_t *rxbio = (raidxor_bio_t *)(bio->bi_private);
@@ -513,6 +548,7 @@ static void raidxor_end_read_request(struct bio *bio, int error)
 	if (to_offset >= bio->bi_size)
 		goto out;
 
+	/* how many bytes from this request need to be copied? */
 	length = raidxor_compute_length(conf, stripe, mbio, index);
 
 	printk(KERN_INFO "raidxor_end_read_request: %lu will copy %lu bytes,"
@@ -528,26 +564,14 @@ out:
 		safe_put_page(bio->bi_io_vec[i].bv_page);
 	bio_put(bio);
 
+	--rxbio->remaining;
 	printk(KERN_INFO "put page, remaining %lu\n", rxbio->remaining);
 
 	if (rxbio->remaining == 0) {
-		bio_endio(mbio, 0);
 		kfree(rxbio);
-	}
-	else {
-		--rxbio->remaining;
-	}
-}
 
-static void raidxor_free_bios(raidxor_bio_t *rxbio)
-{
-	unsigned long i, j;
-	for (i = 0; i < rxbio->n_bios; ++i)
-		if (rxbio->bios[i]) {
-			for (j = 0; j < rxbio->bios[i]->bi_vcnt; ++j)
-				safe_put_page(rxbio->bios[i]->bi_io_vec[j].bv_page);
-			bio_put(rxbio->bios[i]);
-		}
+		bio_endio(mbio, 0);
+	}
 }
 
 /**
@@ -719,6 +743,11 @@ out_free_rxbio:
 	return 1;
 }
 
+/**
+ * raidxord() - handles queued requests
+ *
+ * Takes one request from the queue and commits its associated bios.
+ */
 static void raidxord(mddev_t *mddev)
 {
 	raidxor_conf_t *conf = mddev_to_conf(mddev);
@@ -761,6 +790,13 @@ static void raidxord(mddev_t *mddev)
 		handled);
 }
 
+/**
+ * raidxor_run() - basic initialization for the raid
+ *
+ * We can't use it after this, because the layout of the raid is not
+ * described yet.  Therefore, every read/write operation fails until
+ * we've got enough information.
+ */
 static int raidxor_run(mddev_t *mddev)
 {
 	raidxor_conf_t *conf;
@@ -901,6 +937,11 @@ static int raidxor_bio_on_boundary(stripe_t *stripe, struct bio *bio,
 	return (stripe->size - (newsector << 9)) < bio->bi_size;
 }
 
+/**
+ * raidxor_sector_to_stripe() - returns the stripe a virtual sector belongs to
+ *
+ * @newsector - if non-NULL, the sector in the stripe is written here
+ */
 static stripe_t * raidxor_sector_to_stripe(raidxor_conf_t *conf, sector_t sector,
 					   sector_t *newsector)
 {
@@ -917,7 +958,9 @@ static stripe_t * raidxor_sector_to_stripe(raidxor_conf_t *conf, sector_t sector
 			break;
 		sector -= stripes[i]->size >> 9;
 	}
-	*newsector = sector;
+
+	if (newsector)
+		*newsector = sector;
 
 	return stripes[i];
 }
