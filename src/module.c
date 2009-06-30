@@ -40,7 +40,7 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 	raidxor_resource_t **resources;
 	stripe_t **stripes;
 	disk_info_t *unit;
-	unsigned long i, j;
+	unsigned long i, j, old_data_units = 0;
 	char buffer[32];
 	mddev_t *mddev = conf->mddev;
 	sector_t size = 0;
@@ -133,6 +133,16 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 			stripes[i]->units[j] = unit;
 		}
 		size += stripes[i]->size / 2;
+
+		if (old_data_units == 0) {
+			old_data_units = stripes[i]->n_data_units;
+		}
+		else if (old_data_units != stripes[i]->n_data_units) {
+			printk(KERN_INFO "number of data units on two stripes"
+			       " are different: %u where we assumed %lu\n",
+			       stripes[i]->n_data_units, old_data_units);
+			goto out_free_stripes;
+		}
 	}
 
 	printk(KERN_INFO "setting device size\n");
@@ -148,7 +158,7 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 	   times chunk size so we don't have to read something back manually
 	   for partial write operations;
 	   every request should now be M * N_DATA_UNITS * CHUNK_SIZE long */
-	blk_queue_hardsect_size(mddev->queue, conf->n_data_units * conf->chunk_size);
+	blk_queue_hardsect_size(mddev->queue, old_data_units * conf->chunk_size);
 
 	printk (KERN_INFO "raidxor: array_sectors is %llu blocks\n",
 		(unsigned long long) mddev->array_sectors * 2);
@@ -648,11 +658,11 @@ static int raidxor_prepare_write_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
 	struct bio *mbio = rxbio->master_bio, *rbio;
 	unsigned long chunk_size = conf->chunk_size;
 	stripe_t *stripe = rxbio->stripe;
-	unsigned long npages, size;
+	unsigned long npages, length;
 	struct page *page;
-	unsigned long i, j, k, length;
-
-	goto out_free_rxbio;
+	unsigned long i, j, k;
+	/* number of redundant units we encountered */
+	unsigned long nredundant = 0;
 
 	/* we go over every unit, since we have to write redundant data */
 	rxbio->n_bios = stripe->n_units;
@@ -660,25 +670,30 @@ static int raidxor_prepare_write_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
 	/* TODO: this should become a atomic variable */
 	rxbio->remaining = rxbio->n_bios;
 
+	/* how much do we have to copy? */
 	{
 		unsigned int n_data_units = stripe->n_data_units;
-		/* writing at most one sector more then necessary on (each disk - 1) */
-		size = chunk_size *
-			((mbio->bi_size / chunk_size) / n_data_units +
-			 ((mbio->bi_size / chunk_size) % n_data_units) ? 1 : 0);
-		npages = size / PAGE_SIZE + (size % PAGE_SIZE) ? 1 : 0;
+		/* mbio->bi_size = M * chunk_size * n_data_units
+		   ---------------------------------------------  = M * chunk_size
+		                  n_data_units
+		*/
+		/* number of bytes to write to each data unit */
+		length = mbio->bi_size / n_data_units;
+		npages = length / PAGE_SIZE;
 	}
 
-	printk(KERN_INFO "raidxor: splitting into requests of size %llu a %lu pages\n",
-	       (unsigned long long) size, npages);
+	printk(KERN_INFO "raidxor: splitting into requests of length %lu a %lu pages\n",
+	       length, npages);
 	printk(KERN_INFO "%lu bios\n", rxbio->n_bios);
 
 	for (i = 0; i < rxbio->n_bios; ++i) {
 		printk(KERN_INFO "loop %lu\n", i);
 
 		/* TODO: if it's a redundant unit, do nothing (for now) */
-		if (stripe->units[i]->redundant == 1)
+		if (stripe->units[i]->redundant == 1) {
+			++nredundant;
 			continue;
+		}
 
 		rbio = bio_alloc(GFP_NOIO, npages);
 		if (!rbio) {
@@ -706,14 +721,10 @@ static int raidxor_prepare_write_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
 			rbio->bi_io_vec[j].bv_offset = j * PAGE_SIZE;
 		}
 
-		/* if not redundant */
 		/* ... and copy the data to them, scattered in the original bio
 		   to a continous place in the resulting bio */
-		/* FIXME: which length? */
-		/* FIXME: fromoffset depends on index, that is: i */
-		raidxor_gather_copy_data(rbio, mbio, WHICHLENGTH, FROMOFFSET,
+		raidxor_gather_copy_data(rbio, mbio, length, chunk_size * (i - nredundant),
 					 conf->chunk_size, stripe->n_data_units);
-		/* else */
 	}
 
 	/* this is a request with xorred data
@@ -811,9 +822,9 @@ static int raidxor_prepare_read_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
 		rbio->bi_vcnt = npages;
 
 		printk(KERN_INFO "raidxor: sector %llu, chunk_size >> 9 = %lu, data_offset %llu\n",
-		       rxbio->sector,
+		       (unsigned long long) rxbio->sector,
 		       chunk_size >> 9,
-		       stripe->units[i + k]->rdev->data_offset);
+		       (unsigned long long) stripe->units[i + k]->rdev->data_offset);
 
 		printk(KERN_INFO "raidxor: request %lu goes to physical sector %llu\n",
 		       i, (unsigned long long) rbio->bi_sector);
@@ -1036,7 +1047,7 @@ static stripe_t * raidxor_sector_to_stripe(raidxor_conf_t *conf, sector_t sector
 	       sectors_per_chunk);
 
 	for (i = 0; i < conf->n_stripes; ++i) {
-		printk(KERN_INFO "raidxor: stripe %lu, sector %llu\n", i, sector);
+		printk(KERN_INFO "raidxor: stripe %lu, sector %lu\n", i, sector);
 		if (sector <= stripes[i]->size >> 9)
 			break;
 		sector -= stripes[i]->size >> 9;
