@@ -746,7 +746,7 @@ static int raidxor_prepare_write_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
 		/* this is a request with xorred data
 		   so combine the appropriate resources */
 		raidxor_xor_combine(rbio, rxbio, length, chunk_size,
-				    stripes->units[i]->encoding);
+				    stripe->units[i]->encoding);
 	}
 
 out_free_pages:
@@ -770,7 +770,7 @@ static int raidxor_prepare_read_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
 	unsigned long i, j, k;
 	struct bio *mbio = rxbio->master_bio, *rbio;
 	struct page *page;
-	unsigned long npages, size;
+	unsigned long npages, length;
 	unsigned long chunk_size = conf->chunk_size;
 	stripe_t *stripe = rxbio->stripe;
 	disk_info_t *unit;
@@ -779,19 +779,21 @@ static int raidxor_prepare_read_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
 	       (unsigned long long) mbio->bi_sector,
 	       (unsigned long long) mbio->bi_size);
 
+	/* we only read from the data units at first */
 	rxbio->n_bios = stripe->n_data_units;
 
 	/* TODO: this should become a atomic variable */
 	rxbio->remaining = rxbio->n_bios;
 
-	/* reading at most one sector more then necessary on (each disk - 1) */
-	size = chunk_size *
-		((mbio->bi_size / chunk_size) / stripe->n_data_units +
-		 ((mbio->bi_size / chunk_size) % stripe->n_data_units) ? 1 : 0);
-	npages = size / PAGE_SIZE + (size % PAGE_SIZE) ? 1 : 0;
-	printk(KERN_INFO "raidxor: splitting into requests of size %llu a %lu pages\n",
-	       (unsigned long long) size, npages);
+	/* how much do we have to copy? */
+	{
+		unsigned int n_data_units = stripe->n_data_units;
+		length = mbio->bi_size / n_data_units;
+		npages = length / PAGE_SIZE;
+	}
 
+	printk(KERN_INFO "raidxor: splitting into requests of length %lu a %lu pages\n",
+	       length, npages);
 	printk(KERN_INFO "%lu bios\n", rxbio->n_bios);
 
 	/* k serves as a offset because we've redundant units mixed in */
@@ -809,12 +811,11 @@ static int raidxor_prepare_read_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
 		rbio->bi_private = rxbio;
 
 		/* get the right data units */
-		for (;;) {
+		for (; i + k < stripe->n_units;) {
 			printk(KERN_INFO "%lu + %lu = %lu\n",
 				i, k, i + k);
 
-			if (i + k >= stripe->n_units ||
-				stripe->units[i + k]->redundant == 0)
+			if (stripe->units[i + k]->redundant == 0)
 				break;
 
 			++k;
@@ -837,7 +838,7 @@ static int raidxor_prepare_read_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
 
 		//rbio->bi_sector = rxbio->master_bio->bi_sector / conf->n_resources +
 		//	conf->units[i].rdev->data_offset;
-		rbio->bi_size = size;
+		rbio->bi_size = length;
 		rbio->bi_vcnt = npages;
 
 		printk(KERN_INFO "raidxor: sector %llu, chunk_size >> 9 = %lu, data_offset %llu\n",
