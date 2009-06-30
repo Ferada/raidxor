@@ -645,6 +645,19 @@ static void raidxor_free_bios(raidxor_bio_t *rxbio)
 }
 
 /**
+ * raidxor_xor_combine() - xors a number of resource together
+ *
+ * Takes a master request and combines the request inside the rxbio together
+ * using the given encoding for the unit.
+ */
+static void raidxor_xor_combine(struct bio *bioto, raidxor_bio_t *rxbio,
+				unsigned long length, unsigned long chunk_size,
+				encoding_t *encoding)
+{
+
+}
+
+/**
  * raidxor_prepare_write_bio() - build several bios from one request
  *
  * Same assumptions as for raidxor_prepare_write_bio(), that is: not stripe
@@ -689,12 +702,6 @@ static int raidxor_prepare_write_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
 	for (i = 0; i < rxbio->n_bios; ++i) {
 		printk(KERN_INFO "loop %lu\n", i);
 
-		/* TODO: if it's a redundant unit, do nothing (for now) */
-		if (stripe->units[i]->redundant == 1) {
-			++nredundant;
-			continue;
-		}
-
 		rbio = bio_alloc(GFP_NOIO, npages);
 		if (!rbio) {
 			printk(KERN_INFO "couldn't allocate bio\n");
@@ -721,14 +728,26 @@ static int raidxor_prepare_write_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
 			rbio->bi_io_vec[j].bv_offset = j * PAGE_SIZE;
 		}
 
+		/* TODO: if it's a redundant unit, do nothing (for now) */
+		if (stripe->units[i]->redundant == 1) {
+			++nredundant;
+			continue;
+		}
 		/* ... and copy the data to them, scattered in the original bio
 		   to a continous place in the resulting bio */
-		raidxor_gather_copy_data(rbio, mbio, length, chunk_size * (i - nredundant),
-					 conf->chunk_size, stripe->n_data_units);
+		raidxor_gather_copy_data(rbio, mbio, length,
+					 chunk_size * (i - nredundant),
+					 chunk_size, stripe->n_data_units);
 	}
 
-	/* this is a request with xorred data
-	   so combine the appropriate resources */
+	for (i = 0; i < rxbio->n_bios; ++i) {
+		if (stripe->units[i]->redundant == 0)
+			continue;
+		/* this is a request with xorred data
+		   so combine the appropriate resources */
+		raidxor_xor_combine(rbio, rxbio, length, chunk_size,
+				    stripes->units[i]->encoding);
+	}
 
 out_free_pages:
 	raidxor_free_bios(rxbio);
