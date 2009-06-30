@@ -144,6 +144,12 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 	mddev->array_sectors = size;
 	set_capacity(mddev->gendisk, mddev->array_sectors);
 
+	/* we only accept requests multiple of the number of data units
+	   times chunk size so we don't have to read something back manually
+	   for partial write operations;
+	   every request should now be M * N_DATA_UNITS * CHUNK_SIZE long */
+	blk_queue_hardsect_size(mddev->queue, conf->n_data_units * conf->chunk_size);
+
 	printk (KERN_INFO "raidxor: array_sectors is %llu blocks\n",
 		(unsigned long long) mddev->array_sectors * 2);
 
@@ -598,7 +604,7 @@ static void raidxor_end_read_request(struct bio *bio, int error)
 
 	/* copy the data read, which is a continous chunk, to the scattered
 	   places in the master bio */
-	raidxor_scatter_copy_data(mbio, bio, length, 0, to_offset,
+	raidxor_scatter_copy_data(mbio, bio, length, to_offset,
 				  conf->chunk_size, stripe->n_data_units);
 
 out:
@@ -642,8 +648,9 @@ static int raidxor_prepare_write_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
 	struct bio *mbio = rxbio->master_bio, *rbio;
 	unsigned long chunk_size = conf->chunk_size;
 	stripe_t *stripe = rxbio->stripe;
+	unsigned long npages, size;
 	struct page *page;
-	unsigned long i, k;
+	unsigned long i, j, k, length;
 
 	goto out_free_rxbio;
 
@@ -699,9 +706,14 @@ static int raidxor_prepare_write_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
 			rbio->bi_io_vec[j].bv_offset = j * PAGE_SIZE;
 		}
 
+		/* if not redundant */
 		/* ... and copy the data to them, scattered in the original bio
 		   to a continous place in the resulting bio */
-		raidxor_gather_copy_data();
+		/* FIXME: which length? */
+		/* FIXME: fromoffset depends on index, that is: i */
+		raidxor_gather_copy_data(rbio, mbio, WHICHLENGTH, FROMOFFSET,
+					 conf->chunk_size, stripe->n_data_units);
+		/* else */
 	}
 
 	/* this is a request with xorred data
@@ -923,7 +935,6 @@ static int raidxor_run(mddev_t *mddev)
 
 	spin_lock_init(&conf->device_lock);
 	mddev->queue->queue_lock = &conf->device_lock;
-	blk_queue_hardsect_size(mddev->queue, PAGE_SIZE);
 
 	INIT_LIST_HEAD(&conf->handle_list);
 
