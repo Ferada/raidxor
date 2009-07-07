@@ -590,8 +590,6 @@ static void raidxor_end_read_request(struct bio *bio, int error)
 
 	printk(KERN_INFO "raidxor_end_read_request\n");
 
-	goto out;
-
 	for (i = 0, index = 0; i < stripe->n_units; ++i) {
 		if (stripe->units[i]->redundant == 0)
 			++index;
@@ -728,11 +726,12 @@ static int raidxor_prepare_write_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
 			rbio->bi_io_vec[j].bv_offset = j * PAGE_SIZE;
 		}
 
-		/* TODO: if it's a redundant unit, do nothing (for now) */
+		/* skip for now, see next loop */
 		if (stripe->units[i]->redundant == 1) {
 			++nredundant;
 			continue;
 		}
+
 		/* ... and copy the data to them, scattered in the original bio
 		   to a continous place in the resulting bio */
 		raidxor_gather_copy_data(rbio, mbio, length,
@@ -748,6 +747,8 @@ static int raidxor_prepare_write_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
 		raidxor_xor_combine(rbio, rxbio, length, chunk_size,
 				    stripe->units[i]->encoding);
 	}
+
+	return 0;
 
 out_free_pages:
 	raidxor_free_bios(rxbio);
