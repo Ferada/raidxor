@@ -551,9 +551,9 @@ static unsigned long raidxor_compute_length(raidxor_conf_t *conf,
 static void raidxor_end_write_request(struct bio *bio, int error)
 {
 	raidxor_bio_t *rxbio = (raidxor_bio_t *)(bio->bi_private);
-	raidxor_conf_t *conf = mddev_to_conf(rxbio->mddev);
+	//raidxor_conf_t *conf = mddev_to_conf(rxbio->mddev);
 	struct bio *mbio = rxbio->master_bio;
-	stripe_t *stripe = rxbio->stripe;
+	//stripe_t *stripe = rxbio->stripe;
 	unsigned long i;
 
 	printk(KERN_INFO "raidxor_end_write_request\n");
@@ -570,6 +570,8 @@ out:
 	if (rxbio->remaining == 0) {
 		bio_endio(mbio, 0);
 		kfree(rxbio);
+		// something like this needs to stop
+		//md_write_stop(rxbio->mddev, mbio);
 	}
 	else {
 		--rxbio->remaining;
@@ -580,11 +582,13 @@ static void raidxor_end_read_request(struct bio *bio, int error)
 {
 	raidxor_bio_t *rxbio = (raidxor_bio_t *)(bio->bi_private);
 	raidxor_conf_t *conf = mddev_to_conf(rxbio->mddev);
-	unsigned long i, j, index;
+	unsigned long i, index;
 	struct bio *mbio = rxbio->master_bio;
-	struct bio_vec *bvfrom, *bvto;
-	unsigned long from_offset, to_offset;
-	char *mapped;
+	//struct bio_vec *bvfrom;
+	//struct bio_vec *bvto;
+	//unsigned long from_offset;
+	unsigned long to_offset;
+	//char *mapped;
 	stripe_t *stripe = rxbio->stripe;
 	unsigned long length;
 
@@ -655,6 +659,22 @@ static void raidxor_xor_combine(struct bio *bioto, raidxor_bio_t *rxbio,
 
 }
 
+static void raidxor_compute_length_and_pages(stripe_t *stripe,
+					     struct bio *mbio,
+					     unsigned long *length,
+					     unsigned long *npages)
+{
+	/* mbio->bi_size = M * chunk_size * n_data_units
+	   ---------------------------------------------  = M * chunk_size
+	   n_data_units
+	*/
+	unsigned long tmp = mbio->bi_size / stripe->n_data_units;
+
+	/* number of bytes to write to each data unit */
+	*length = tmp;
+	*npages = tmp / PAGE_SIZE;
+}
+
 /**
  * raidxor_prepare_write_bio() - build several bios from one request
  *
@@ -671,7 +691,7 @@ static int raidxor_prepare_write_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
 	stripe_t *stripe = rxbio->stripe;
 	unsigned long npages, length;
 	struct page *page;
-	unsigned long i, j, k;
+	unsigned long i, j;
 	/* number of redundant units we encountered */
 	unsigned long nredundant = 0;
 
@@ -682,16 +702,7 @@ static int raidxor_prepare_write_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
 	rxbio->remaining = rxbio->n_bios;
 
 	/* how much do we have to copy? */
-	{
-		unsigned int n_data_units = stripe->n_data_units;
-		/* mbio->bi_size = M * chunk_size * n_data_units
-		   ---------------------------------------------  = M * chunk_size
-		                  n_data_units
-		*/
-		/* number of bytes to write to each data unit */
-		length = mbio->bi_size / n_data_units;
-		npages = length / PAGE_SIZE;
-	}
+	raidxor_compute_length_and_pages(stripe, mbio, &length, &npages);
 
 	printk(KERN_INFO "raidxor: splitting into requests of length %lu a %lu pages\n",
 	       length, npages);
@@ -752,7 +763,7 @@ static int raidxor_prepare_write_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
 
 out_free_pages:
 	raidxor_free_bios(rxbio);
-out_free_rxbio:
+//out_free_rxbio:
 	kfree(rxbio);
 	bio_io_error(mbio);
 	return 1;
@@ -774,7 +785,7 @@ static int raidxor_prepare_read_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
 	unsigned long npages, length;
 	unsigned long chunk_size = conf->chunk_size;
 	stripe_t *stripe = rxbio->stripe;
-	disk_info_t *unit;
+	//disk_info_t *unit;
 
 	printk(KERN_INFO "raidxor: splitting from sector %llu, %llu bytes\n",
 	       (unsigned long long) mbio->bi_sector,
@@ -787,11 +798,7 @@ static int raidxor_prepare_read_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
 	rxbio->remaining = rxbio->n_bios;
 
 	/* how much do we have to copy? */
-	{
-		unsigned int n_data_units = stripe->n_data_units;
-		length = mbio->bi_size / n_data_units;
-		npages = length / PAGE_SIZE;
-	}
+	raidxor_compute_length_and_pages(stripe, mbio, &length, &npages);
 
 	printk(KERN_INFO "raidxor: splitting into requests of length %lu a %lu pages\n",
 	       length, npages);
@@ -870,7 +877,7 @@ static int raidxor_prepare_read_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
 
 out_free_pages:
 	raidxor_free_bios(rxbio);
-out_free_rxbio:
+//out_free_rxbio:
 	kfree(rxbio);
 	bio_io_error(mbio);
 	return 1;
@@ -903,7 +910,18 @@ static void raidxord(mddev_t *mddev)
 				printk(KERN_INFO "raidxor: unfinished write request aborted\n");
 				continue;
 			}
+
+			/* only used for md driver housekeeping */
+			//md_write_start(mddev, bio);
 		}
+
+		//bio_endio(bio, -EOPNOTSUPP);
+
+		// signal an read error to the md layer
+		//md_error(
+
+		// stop this transfer and signal an error to upper level (not md, but blk_queue)
+		//bio_io_error(bio); // == bio_endio(bio, -EIO)
 
 		spin_unlock(&conf->device_lock);
 		for (i = 0; i < rxbio->n_bios; ++i)
@@ -1045,7 +1063,7 @@ static int raidxor_stop(mddev_t *mddev)
 
 static void raidxor_status(struct seq_file *seq, mddev_t *mddev)
 {
-	raidxor_conf_t *conf = mddev_to_conf(mddev);
+	//raidxor_conf_t *conf = mddev_to_conf(mddev);
 
 	seq_printf(seq, " I'm feeling fine");
 	return;
@@ -1121,29 +1139,6 @@ UNLOCKCONF(conf);
 	}
 
 	return 0;
-
-	/* only used for md driver housekeeping */
-	//md_write_start(mddev, bio);
-
-	/* allocate enough memory for the transfers to each of the disks */
-	/* size = (bi_size / (512 * data_disks)) */
-	//stripe_size = 512 * ((bio->bi_size / 512) / conf->n_data_disks
-	//		     + (bio->bi_size / 512) % conf->n_data_disks);
-	
-	//printk (KERN_INFO "raidxor: i want to allocate %u bytes for each drive\n", stripe_size);
-
-	/* calculate the stripes */
-	/*{
-		
-	}*/
-
-	//bio_endio(bio, -EOPNOTSUPP);
-
-	// signal an read error to the md layer
-	//md_error(
-
-	// stop this transfer and signal an error to upper level (not md, but blk_queue)
-	//bio_io_error(bio); // == bio_endio(bio, -EIO)
 
 out:
 	bio_io_error(bio);
