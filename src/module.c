@@ -643,25 +643,27 @@ out:
  */
 static void raidxor_xor_single(struct bio *bioto, struct bio *biofrom)
 {
-	unsigned long i = 0, j = 0;
+	unsigned long i, j;
+	struct bio_vec *bvto, *bvfrom;
 	unsigned char *tomapped, *frommapped;
 	unsigned char *toptr, *fromptr;
 
-	struct bio_vec *bvfrom = bio_iovec_idx(biofrom, i);
-	struct bio_vec *bvto = bio_iovec_idx(bioto, j);
+	for (i = 0; i < bioto->bi_vcnt; ++i) {
+		bvto = bio_iovec_idx(bioto, i);
+		bvfrom = bio_iovec_idx(biofrom, i);
 
-	tomapped = (unsigned char *) __bio_kmap_atomic(bioto, j, KM_USER0);
-	frommapped = (unsigned char *) __bio_kmap_atomic(biofrom, j, KM_USER0);
+		tomapped = (unsigned char *) __bio_kmap_atomic(bioto, i, KM_USER0);
+		frommapped = (unsigned char *) __bio_kmap_atomic(biofrom, i, KM_USER0);
 
-	toptr = tomapped + bvto->bv_offset;
-	fromptr = frommapped + bvfrom->bv_offset;
+		toptr = tomapped + bvto->bv_offset;
+		fromptr = frommapped + bvfrom->bv_offset;
 
-	while (1) {
-		*toptr = *toptr ^ *fromptr;
+		for (j = 0; j < bvto->bv_len; ++j, ++toptr, ++fromptr)
+			*toptr ^= *fromptr;
+
+		__bio_kunmap_atomic(biofrom, KM_USER0);
+		__bio_kunmap_atomic(bioto, KM_USER0);
 	}
-
-	__bio_kunmap_atomic(biofrom, KM_USER0);
-	__bio_kunmap_atomic(bioto, KM_USER0);
 }
 
 #ifdef RAIDXOR_RUN_TESTCASES
