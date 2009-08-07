@@ -5,6 +5,8 @@
 
 #include "raidxor.h"
 
+#define RAIDXOR_RUN_TESTCASES 1
+
 /**
  * raidxor_safe_free_conf() - frees resource and stripe information
  *
@@ -692,6 +694,43 @@ static int raidxor_check_same_size_and_layout(struct bio *x, struct bio *y)
 	return 0;
 }
 
+#ifdef RAIDXOR_RUN_TESTCASES
+static int raidxor_test_case_sizeandlayout(void)
+{
+	struct bio bio1, bio2;
+	struct bio_vec vs1[2], vs2[2];
+
+	bio1.bi_io_vec = vs1;
+	bio2.bi_io_vec = vs2;
+
+	bio1.bi_vcnt = 2;
+	bio2.bi_vcnt = 2;
+
+	vs1[1].bv_len = 42;
+	vs1[2].bv_len = 1024;
+
+	vs2[1].bv_len = 3020;
+	vs2[2].bv_len = 43;
+
+	bio1.bi_size = 42 + 1024;
+	bio2.bi_size = 3020 + 43;
+
+	if (raidxor_check_same_size_and_layout(&bio1, &bio2)) {
+		printk(KERN_INFO "raidxor: test case sizeandlayout/1 failed");
+		return 1;
+	}
+
+	vs1[1].bv_len = 32;
+
+	if (!raidxor_check_same_size_and_layout(&bio1, &bio2)) {
+		printk(KERN_INFO "raidxor: test case sizeandlayout/2 failed");
+		return 1;
+	}
+
+	return 0;
+}
+#endif
+
 /**
  * raidxor_find_bio() - searches for the corresponding bio for a single unit
  *
@@ -1238,8 +1277,8 @@ LOCKCONF(conf);
 
 UNLOCKCONF(conf);
 
-	if (rw == READ) printk (KERN_INFO "raidxor: handling read request\n");
-	else printk (KERN_INFO "raidxor: handling write request\n");
+	if (rw == READ) printk(KERN_INFO "raidxor: handling read request\n");
+	else printk(KERN_INFO "raidxor: handling write request\n");
 
 	return 0;
 
@@ -1248,6 +1287,19 @@ out:
 UNLOCKCONF(conf);
 	return 0;
 }
+
+#ifdef RAIDXOR_RUN_TESTCASES
+static int raidxor_run_test_cases(void)
+{
+	if (raidxor_test_case_sizeandlayout()) {
+		printk(KERN_INFO "raidxor: test case sizeandlayout failed");
+		return 1;
+	}
+
+	printk(KERN_INFO "raidxor: test cases run successfully\n");
+	return 0;
+}
+#endif
 
 static struct mdk_personality raidxor_personality =
 {
@@ -1267,9 +1319,13 @@ static struct mdk_personality raidxor_personality =
 	/* .quiesce = raidxor_quiesce, */
 };
 
-
 static int __init raidxor_init(void)
 {
+	#ifdef RAIDXOR_RUN_TESTCASES
+	if (raidxor_run_test_cases())
+		return 1;
+	#endif
+
 	return register_md_personality(&raidxor_personality);
 }
 
