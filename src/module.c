@@ -345,7 +345,7 @@ raidxor_encoding = __ATTR(encoding, S_IRUGO | S_IWUSR,
 			  raidxor_show_encoding,
 			  raidxor_store_encoding);
 
-static struct attribute *raidxor_attrs[] = {
+static struct attribute * raidxor_attrs[] = {
 	(struct attribute *) &raidxor_number_of_resources,
 	(struct attribute *) &raidxor_units_per_resource,
 	(struct attribute *) &raidxor_encoding,
@@ -676,16 +676,18 @@ static int raidxor_check_same_size_and_layout(struct bio *x, struct bio *y)
 {
 	unsigned long i;
 
+	/* two bios are the same, if they are of the same size, */
 	if (x->bi_size != y->bi_size)
 		return 1;
 
+	/* have the same number of bio_vecs, */
 	if (x->bi_vcnt != y->bi_vcnt)
 		return 1;
 
-	for (i = 0; i < x->bi_vcnt; ++i) {
+	/* and those are of the same length, pairwise */
+	for (i = 0; i < x->bi_vcnt; ++i)
 		if (x->bi_io_vec[i].bv_len != y->bi_io_vec[i].bv_len)
 			return 1;
-	}
 
 	return 0;
 }
@@ -699,6 +701,7 @@ static struct bio * raidxor_find_bio(raidxor_bio_t *rxbio, struct disk_info *uni
 {
 	unsigned long i;
 
+	/* goes to the bdevs to find a matching bio */
 	for (i = 0; i < rxbio->n_bios; ++i)
 		if (rxbio->bios[i]->bi_bdev == unit->rdev->bdev)
 			return rxbio->bios[i];
@@ -980,6 +983,11 @@ out_free_pages:
 	return 1;
 }
 
+/**
+ * raidxord() - daemon thread
+ *
+ * Is started by the md level.  Takes requests from the queue and handles them.
+ */
 static void raidxord(mddev_t *mddev)
 {
 	raidxor_conf_t *conf = mddev_to_conf(mddev);
@@ -989,22 +997,21 @@ static void raidxord(mddev_t *mddev)
 	printk(KERN_INFO "raidxor: raidxord active\n");
 
 	spin_lock(&conf->device_lock);
-	for (;;) {
-		if (list_empty(&conf->handle_list))
-			break;
-
+	for (; !list_empty(&conf->handle_list);) {
 		rxbio = list_entry(conf->handle_list.next, typeof(*rxbio), lru);
 		list_del_init(&rxbio->lru);
 
 		if (bio_data_dir(rxbio->master_bio) == READ) {
 			if (raidxor_prepare_read_bio(conf, rxbio)) {
-				printk(KERN_INFO "raidxor: unfinished read request aborted\n");
+				printk(KERN_INFO "raidxor: unfinished read"
+				       " request aborted\n");
 				continue;
 			}
 		}
 		else {
 			if (raidxor_prepare_write_bio(conf, rxbio)) {
-				printk(KERN_INFO "raidxor: unfinished write request aborted\n");
+				printk(KERN_INFO "raidxor: unfinished write"
+				       " request aborted\n");
 				continue;
 			}
 
@@ -1021,16 +1028,19 @@ static void raidxord(mddev_t *mddev)
 		//bio_io_error(bio); // == bio_endio(bio, -EIO)
 
 		spin_unlock(&conf->device_lock);
+
+		/* commit the requests */
 		for (i = 0; i < rxbio->n_bios; ++i)
 			if (rxbio->bios[i])
 				generic_make_request(rxbio->bios[i]);
 		++handled;
+
 		spin_lock(&conf->device_lock);
 	}
 	spin_unlock(&conf->device_lock);
 
 	printk(KERN_INFO "raidxor: raidxord inactive, handled %lu requests\n",
-		handled);
+	       handled);
 }
 
 static int raidxor_run(mddev_t *mddev)
@@ -1172,7 +1182,7 @@ static int raidxor_bio_on_boundary(stripe_t *stripe, struct bio *bio,
 	return (stripe->size - (newsector << 9)) < bio->bi_size;
 }
 
-static stripe_t *raidxor_sector_to_stripe(raidxor_conf_t *conf, sector_t sector,
+static stripe_t * raidxor_sector_to_stripe(raidxor_conf_t *conf, sector_t sector,
 					  sector_t *newsector)
 {
 	unsigned int sectors_per_chunk = conf->chunk_size >> 9;
