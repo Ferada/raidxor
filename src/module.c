@@ -824,6 +824,57 @@ static struct bio * raidxor_find_bio(raidxor_bio_t *rxbio, struct disk_info *uni
 	return NULL;
 }
 
+#ifdef RAIDXOR_RUN_TESTCASES
+static int raidxor_test_case_find_bio(void)
+{
+	struct bio bio1, bio2, bio3;
+	raidxor_bio_t *rxbio;
+	mdk_rdev_t rdev1, rdev2;
+	struct disk_info unit1, unit2;
+
+	unit1.rdev = &rdev1;
+	unit2.rdev = &rdev2;
+	unit1.redundant = unit2.redundant = 0;
+	unit1.encoding = unit2.encoding = NULL;
+	unit1.resource = unit2.resource = NULL;
+	unit1.stripe = unit2.stripe = NULL;
+
+	rdev1.bdev = (void *) 0xdeadbeef;
+	rdev2.bdev = (void *) 0xcafecafe;
+
+	rxbio = kzalloc(sizeof(raidxor_bio_t) +
+			sizeof(struct bio *) * 3, GFP_NOIO);
+	if (!rxbio) {
+		printk(KERN_INFO "raidxor: allocation failed in test case"
+		       " xor_combine\n");
+		return 1;
+	}
+
+	rxbio->n_bios = 3;
+	rxbio->bios[0] = &bio1;
+	rxbio->bios[1] = &bio2;
+	rxbio->bios[2] = &bio3;
+
+	if (&bio1 != raidxor_find_bio(rxbio, &unit1)) {
+		kfree(rxbio);
+		printk(KERN_INFO "raidxor: didn't find unit 1 in test case"
+		       " find_bio\n");
+		return 1;
+	}
+
+	if (&bio2 != raidxor_find_bio(rxbio, &unit2)) {
+		kfree(rxbio);
+		printk(KERN_INFO "raidxor: didn't find unit 2 in test case"
+		       " find_bio\n");
+		return 1;
+	}
+
+	kfree(rxbio);
+
+	return 0;
+}
+#endif
+
 /**
  * raidxor_xor_combine() - xors a number of resources together
  *
@@ -1490,6 +1541,11 @@ static int raidxor_run_test_cases(void)
 
 	if (raidxor_test_case_xor_single()) {
 		printk(KERN_INFO "raidxor: test case xor_single failed");
+		return 1;
+	}
+
+	if (raidxor_test_case_find_bio()) {
+		printk(KERN_INFO "raidxor: test case find_bio failed");
 		return 1;
 	}
 
