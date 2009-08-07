@@ -7,6 +7,16 @@
 
 #define RAIDXOR_RUN_TESTCASES 1
 
+#ifdef RAIDXOR_RUN_TESTCASES
+static void raidxor_fill_bio(struct bio *bio, unsigned long idx,
+			     unsigned char value, unsigned long length)
+{
+	unsigned char *data = __bio_kmap_atomic(bio, idx, KM_USER0);
+	memset(data, value, length);
+	__bio_kunmap_atomic(data, KM_USER0);
+}
+#endif
+
 /**
  * raidxor_safe_free_conf() - frees resource and stripe information
  *
@@ -681,33 +691,23 @@ static int raidxor_test_case_xor_single(void)
 
 	bio2.bi_vcnt = bio1.bi_vcnt = 2;
 
-	vs2[1].bv_len = vs1[1].bv_len = length1 = 42;
-	vs2[2].bv_len = vs1[2].bv_len = length2 = 1024;
+	vs2[0].bv_len = vs1[0].bv_len = length1 = 42;
+	vs2[2].bv_len = vs1[1].bv_len = length2 = 1024;
 
 	bio2.bi_size = bio1.bi_size = 42 + 1024;
 
+	vs1[0].bv_page = alloc_page(GFP_NOIO);
 	vs1[1].bv_page = alloc_page(GFP_NOIO);
-	vs1[2].bv_page = alloc_page(GFP_NOIO);
+	vs2[0].bv_page = alloc_page(GFP_NOIO);
 	vs2[1].bv_page = alloc_page(GFP_NOIO);
-	vs2[2].bv_page = alloc_page(GFP_NOIO);
 
-	data = __bio_kmap_atomic(&bio1, 0, KM_USER0);
-	memset(data, 3, PAGE_SIZE);
-	__bio_kunmap_atomic(data, KM_USER0);
-
-	data = __bio_kmap_atomic(&bio1, 1, KM_USER0);
-	memset(data, 42, PAGE_SIZE);
-	__bio_kunmap_atomic(data, KM_USER0);
+	raidxor_fill_bio(&bio1, 0, 3, PAGE_SIZE);
+	raidxor_fill_bio(&bio2, 0, 42, PAGE_SIZE);
 
 	xor1 = 3 ^ 42;
 
-	data = __bio_kmap_atomic(&bio2, 0, KM_USER0);
-	memset(data, 15, PAGE_SIZE);
-	__bio_kunmap_atomic(data, KM_USER0);
-
-	data = __bio_kmap_atomic(&bio2, 1, KM_USER0);
-	memset(data, 23, PAGE_SIZE);
-	__bio_kunmap_atomic(data, KM_USER0);
+	raidxor_fill_bio(&bio1, 1, 15, PAGE_SIZE);
+	raidxor_fill_bio(&bio2, 1, 23, PAGE_SIZE);
 
 	xor2 = 15 ^ 23;
 
@@ -717,7 +717,7 @@ static int raidxor_test_case_xor_single(void)
 	for (i = 0; i < length1; ++i) {
 		if (data[i] != xor1) {
 			printk(KERN_INFO "raidxor: buffer 1 differs at byte"
-			       "%lu: %d != %d\n", i, data[i], xor1);
+			       " %lu: %d != %d\n", i, data[i], xor1);
 			return 1;
 		}
 	}
@@ -727,16 +727,16 @@ static int raidxor_test_case_xor_single(void)
 	for (i = 0; i < length2; ++i) {
 		if (data[i] != xor2) {
 			printk(KERN_INFO "raidxor: buffer 2 differs at byte"
-			       "%lu: %d != %d\n", i, data[i], xor2);
+			       " %lu: %d != %d\n", i, data[i], xor2);
 			return 1;
 		}
 	}
 	__bio_kunmap_atomic(data, KM_USER0);
 
+	safe_put_page(vs1[0].bv_page);
 	safe_put_page(vs1[1].bv_page);
-	safe_put_page(vs1[2].bv_page);
+	safe_put_page(vs2[0].bv_page);
 	safe_put_page(vs2[1].bv_page);
-	safe_put_page(vs2[2].bv_page);
 
 	return 0;
 }
@@ -846,13 +846,13 @@ static int raidxor_xor_combine(struct bio *bioto, raidxor_bio_t *rxbio,
 
 		if (!biofrom) {
 			printk(KERN_DEBUG "raidxor: didn't find bio in"
-			       "raidxor_xor_combine\n");
+			       " raidxor_xor_combine\n");
 			return 1;
 		}
 
 		if (raidxor_check_same_size_and_layout(bioto, biofrom)) {
 			printk(KERN_DEBUG "raidxor: bioto and biofrom"
-			       "differ in size and/or layout\n");
+			       " differ in size and/or layout\n");
 			return 1;
 		}
 
@@ -862,6 +862,122 @@ static int raidxor_xor_combine(struct bio *bioto, raidxor_bio_t *rxbio,
 
 	return 0;
 }
+
+#ifdef RAIDXOR_RUN_TESTCASES
+static int raidxor_test_case_xor_combine(void)
+{
+	unsigned long i;
+	struct bio bio1, bio2, bio3;
+	struct bio_vec vs1[2], vs2[2], vs3[2];
+	unsigned char xor1, xor2;
+	unsigned char *data;
+	raidxor_bio_t *rxbio;
+	encoding_t *encoding;
+	mdk_rdev_t rdev1, rdev2;
+	struct disk_info unit1, unit2;
+
+	unit1.rdev = &rdev1;
+	unit2.rdev = &rdev2;
+	unit1.redundant = unit2.redundant = 0;
+	unit1.encoding = unit2.encoding = NULL;
+	unit1.resource = unit2.resource = NULL;
+	unit1.stripe = unit2.stripe = NULL;
+
+	rdev1.bdev = (void *) 0xdeadbeef;
+	rdev2.bdev = (void *) 0xcafecafe;
+
+	rxbio = kzalloc(sizeof(raidxor_bio_t) +
+			sizeof(struct bio *) * 3, GFP_NOIO);
+	if (!rxbio) {
+		printk(KERN_INFO "raidxor: allocation failed in test case"
+		       " xor_combine\n");
+		return 1;
+	}
+
+	rxbio->n_bios = 3;
+	rxbio->bios[0] = &bio1;
+	rxbio->bios[1] = &bio2;
+	rxbio->bios[2] = &bio3;
+
+	encoding = kzalloc(sizeof(encoding_t) +
+			   sizeof(disk_info_t *) * 2, GFP_NOIO);
+	if (!encoding) {
+		kfree(rxbio);
+		printk(KERN_INFO "raidxor: allocation failed in test case"
+		       " xor_combine\n");
+		return 1;
+	}
+
+	encoding->n_units = 2;
+	encoding->units[0] = &unit1;
+	encoding->units[1] = &unit2;
+
+	bio1.bi_io_vec = vs1;
+	bio2.bi_io_vec = vs2;
+	bio3.bi_io_vec = vs3;
+
+	bio3.bi_vcnt = bio2.bi_vcnt = bio1.bi_vcnt = 2;
+
+	vs1[0].bv_len = vs1[1].bv_len = PAGE_SIZE;
+	vs2[0].bv_len = vs2[1].bv_len = PAGE_SIZE;
+	vs3[0].bv_len = vs3[1].bv_len = PAGE_SIZE;
+
+	bio3.bi_size = bio2.bi_size = bio1.bi_size = 2 * PAGE_SIZE;
+
+	vs1[0].bv_page = alloc_page(GFP_NOIO);
+	vs1[1].bv_page = alloc_page(GFP_NOIO);
+	vs2[0].bv_page = alloc_page(GFP_NOIO);
+	vs2[1].bv_page = alloc_page(GFP_NOIO);
+	vs3[0].bv_page = alloc_page(GFP_NOIO);
+	vs3[1].bv_page = alloc_page(GFP_NOIO);
+
+	raidxor_fill_bio(&bio1, 0, 3, PAGE_SIZE);
+	raidxor_fill_bio(&bio2, 0, 180, PAGE_SIZE);
+	raidxor_fill_bio(&bio3, 0, 42, PAGE_SIZE);
+
+	xor1 = 3 ^ 42 ^ 180;
+
+	raidxor_fill_bio(&bio1, 1, 15, PAGE_SIZE);
+	raidxor_fill_bio(&bio2, 1, 23, PAGE_SIZE);
+	raidxor_fill_bio(&bio3, 1, 250, PAGE_SIZE);
+
+	xor2 = 15 ^ 23 ^ 250;
+
+	raidxor_xor_combine(&bio1, rxbio, encoding);
+
+	data = __bio_kmap_atomic(&bio1, 0, KM_USER0);
+	for (i = 0; i < PAGE_SIZE; ++i) {
+		if (data[i] != xor1) {
+			printk(KERN_INFO "raidxor: buffer 1 differs at byte"
+			       " %lu: %d != %d\n", i, data[i], xor1);
+			return 1;
+		}
+	}
+	__bio_kunmap_atomic(data, KM_USER0);
+
+	data = __bio_kmap_atomic(&bio1, 1, KM_USER0);
+	for (i = 0; i < PAGE_SIZE; ++i) {
+		if (data[i] != xor2) {
+			printk(KERN_INFO "raidxor: buffer 2 differs at byte"
+			       " %lu: %d != %d\n", i, data[i], xor2);
+			return 1;
+		}
+	}
+	__bio_kunmap_atomic(data, KM_USER0);
+
+	safe_put_page(vs1[0].bv_page);
+	safe_put_page(vs1[1].bv_page);
+	safe_put_page(vs2[0].bv_page);
+	safe_put_page(vs2[1].bv_page);
+	safe_put_page(vs3[0].bv_page);
+	safe_put_page(vs3[1].bv_page);
+
+	kfree(rxbio);
+	kfree(encoding);
+
+	return 0;
+}
+#endif
 
 static void raidxor_compute_length_and_pages(stripe_t *stripe,
 					     struct bio *mbio,
@@ -1374,6 +1490,11 @@ static int raidxor_run_test_cases(void)
 
 	if (raidxor_test_case_xor_single()) {
 		printk(KERN_INFO "raidxor: test case xor_single failed");
+		return 1;
+	}
+
+	if (raidxor_test_case_xor_combine()) {
+		printk(KERN_INFO "raidxor: test case xor_combine failed");
 		return 1;
 	}
 
