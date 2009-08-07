@@ -259,23 +259,6 @@ raidxor_show_encoding(mddev_t *mddev, char *page)
 	return -EIO;
 }
 
-/*
-  everything < 4096 Bytes !
-
-  /sys/md/raidxor/number_of_resources:
-  [number_of_resources]
-
-  /sys/md/raidxor/units_per_resource
-  [number_of_units_per_resource]
-
-  then we have a grid and can assign the units
-
-  /sys/md/raidxor/redundancy:
-  [index][redundant][length_of_equation]
-    [index] ... [index]
-  [index][not_redundant]
-  ...
- */
 static ssize_t
 raidxor_store_encoding(mddev_t *mddev, const char *page, size_t len)
 {
@@ -373,7 +356,35 @@ static struct attribute_group raidxor_attrs_group = {
 	.name = NULL,
 	.attrs = raidxor_attrs,
 };
+
+/**
+ * raidxor_free_bio() - puts all pages in a bio and the bio itself
+ */
+static void raidxor_free_bio(struct bio *bio)
+{
+	unsigned long i;
+	for (i = 0; i < bio->bi_vcnt; ++i)
+		safe_put_page(bio->bi_io_vec[i].bv_page);
+	bio_put(bio);
+}
 
+/**
+ * raidxor_free_bios() - puts all bios (and their pages) in a raidxor_bio_t
+ */
+static void raidxor_free_bios(raidxor_bio_t *rxbio)
+{
+	unsigned long i;
+	for (i = 0; i < rxbio->n_bios; ++i) {
+		if (rxbio->bios[i]) {
+			raidxor_free_bio(rxbio->bios[i]);
+		}
+	}
+}
+
+/*
+ * two helper macros in the following two functions, eventually they need
+ * to have k(un)map functionality added
+*/
 #define NEXT_BVFROM do { bvfrom = bio_iovec_idx(biofrom, ++i); } while (0)
 #define NEXT_BVTO do { bvto = bio_iovec_idx(bioto, ++j); } while (0)
 
@@ -554,16 +565,11 @@ static void raidxor_end_write_request(struct bio *bio, int error)
 	//raidxor_conf_t *conf = mddev_to_conf(rxbio->mddev);
 	struct bio *mbio = rxbio->master_bio;
 	//stripe_t *stripe = rxbio->stripe;
-	unsigned long i;
 
 	printk(KERN_INFO "raidxor_end_write_request\n");
 
-	goto out;
-
-out:
-	for (i = 0; i < bio->bi_vcnt; ++i)
-		safe_put_page(bio->bi_io_vec[i].bv_page);
-	bio_put(bio);
+//out:
+	raidxor_free_bio(bio);
 
 	printk(KERN_INFO "put page, remaining %lu\n", rxbio->remaining);
 
@@ -620,9 +626,7 @@ static void raidxor_end_read_request(struct bio *bio, int error)
 				  conf->chunk_size, stripe->n_data_units);
 
 out:
-	for (i = 0; i < bio->bi_vcnt; ++i)
-		safe_put_page(bio->bi_io_vec[i].bv_page);
-	bio_put(bio);
+	raidxor_free_bio(bio);
 
 	printk(KERN_INFO "put page, remaining %lu\n", rxbio->remaining);
 
@@ -635,28 +639,110 @@ out:
 	}
 }
 
-static void raidxor_free_bios(raidxor_bio_t *rxbio)
+/**
+ * raidxor_xor_single() - xors the buffers of two bios together
+ *
+ * Both bios have to be of the same size and layout.
+ */
+static void raidxor_xor_single(struct bio *bioto, struct bio *biofrom)
 {
-	unsigned long i, j;
-	for (i = 0; i < rxbio->n_bios; ++i)
-		if (rxbio->bios[i]) {
-			for (j = 0; j < rxbio->bios[i]->bi_vcnt; ++j)
-				safe_put_page(rxbio->bios[i]->bi_io_vec[j].bv_page);
-			bio_put(rxbio->bios[i]);
-		}
+	unsigned long i = 0, j = 0;
+	unsigned char *tomapped, *frommapped;
+	unsigned char *toptr, *fromptr;
+
+	struct bio_vec *bvfrom = bio_iovec_idx(biofrom, i);
+	struct bio_vec *bvto = bio_iovec_idx(bioto, j);
+
+	tomapped = (unsigned char *) __bio_kmap_atomic(bioto, j, KM_USER0);
+	frommapped = (unsigned char *) __bio_kmap_atomic(biofrom, j, KM_USER0);
+
+	toptr = tomapped + bvto->bv_offset;
+	fromptr = frommapped + bvfrom->bv_offset;
+
+	while (1) {
+		*toptr = *toptr ^ *fromptr;
+	}
+
+	__bio_kunmap_atomic(biofrom, KM_USER0);
+	__bio_kunmap_atomic(bioto, KM_USER0);
 }
 
 /**
- * raidxor_xor_combine() - xors a number of resource together
+ * raidxor_check_same_size_and_layout() - checks two bios
+ *
+ * Returns 0 if both bios have the same size and are layed out the same way, else 1.
+ */
+static int raidxor_check_same_size_and_layout(struct bio *x, struct bio *y)
+{
+	unsigned long i;
+
+	if (x->bi_size != y->bi_size)
+		return 1;
+
+	if (x->bi_vcnt != y->bi_vcnt)
+		return 1;
+
+	for (i = 0; i < x->bi_vcnt; ++i) {
+		if (x->bi_io_vec[i].bv_len != y->bi_io_vec[i].bv_len)
+			return 1;
+	}
+
+	return 0;
+}
+
+/**
+ * raidxor_find_bio() - searches for the corresponding bio for a single unit
+ *
+ * Returns NULL if not found.
+ */
+static struct bio * raidxor_find_bio(raidxor_bio_t *rxbio, struct disk_info *unit)
+{
+	unsigned long i;
+
+	for (i = 0; i < rxbio->n_bios; ++i)
+		if (rxbio->bios[i]->bi_bdev == unit->rdev->bdev)
+			return rxbio->bios[i];
+
+	return NULL;
+}
+
+/**
+ * raidxor_xor_combine() - xors a number of resources together
  *
  * Takes a master request and combines the request inside the rxbio together
  * using the given encoding for the unit.
+ *
+ * Returns 1 on error (bioto still might be touched in this case).
  */
-static void raidxor_xor_combine(struct bio *bioto, raidxor_bio_t *rxbio,
-				unsigned long length, unsigned long chunk_size,
+static int raidxor_xor_combine(struct bio *bioto, raidxor_bio_t *rxbio,
 				encoding_t *encoding)
 {
+	/* since we have control over bioto and rxbio, every bio has size
+	   M * CHUNK_SIZE with CHUNK_SIZE = N * PAGE_SIZE */
+	unsigned long i;
+	struct bio *biofrom;
 
+	for (i = 0; i < encoding->n_units; ++i) {
+		/* search for the right bio */
+		biofrom = raidxor_find_bio(rxbio, encoding->units[i]);
+
+		if (!biofrom) {
+			printk(KERN_DEBUG "raidxor: didn't find bio in"
+			       "raidxor_xor_combine\n");
+			return 1;
+		}
+
+		if (raidxor_check_same_size_and_layout(bioto, biofrom)) {
+			printk(KERN_DEBUG "raidxor: bioto and biofrom"
+			       "differ in size and/or layout\n");
+			return 1;
+		}
+
+		/* combine the data */
+		raidxor_xor_single(bioto, biofrom);
+	}
+
+	return 0;
 }
 
 static void raidxor_compute_length_and_pages(stripe_t *stripe,
@@ -686,7 +772,7 @@ static void raidxor_compute_length_and_pages(stripe_t *stripe,
  */
 static int raidxor_prepare_write_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
 {
-	struct bio *mbio = rxbio->master_bio, *rbio;
+	struct bio *mbio = rxbio->master_bio, *rbio = NULL;
 	unsigned long chunk_size = conf->chunk_size;
 	stripe_t *stripe = rxbio->stripe;
 	unsigned long npages, length;
@@ -737,6 +823,20 @@ static int raidxor_prepare_write_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
 			rbio->bi_io_vec[j].bv_offset = j * PAGE_SIZE;
 		}
 
+		/* we need to use do_div here */
+		rbio->bi_sector = rxbio->sector;
+		do_div(rbio->bi_sector, chunk_size >> 9);
+		//FIXME: whats with the k?, see preprare_read ...
+#if 0
+		rbio->bi_sector += stripe->units[i + k]->rdev->data_offset;
+#endif
+
+		//rbio->bi_sector = stripe->units[i + k]->rdev->data_offset +
+		//	rxbio->sector / (chunk_size >> 9);
+
+		rbio->bi_size = length;
+		rbio->bi_vcnt = npages;
+
 		/* skip for now, see next loop */
 		if (stripe->units[i]->redundant == 1) {
 			++nredundant;
@@ -755,8 +855,7 @@ static int raidxor_prepare_write_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
 			continue;
 		/* this is a request with xorred data
 		   so combine the appropriate resources */
-		raidxor_xor_combine(rbio, rxbio, length, chunk_size,
-				    stripe->units[i]->encoding);
+		raidxor_xor_combine(rbio, rxbio, stripe->units[i]->encoding);
 	}
 
 	return 0;
@@ -844,8 +943,6 @@ static int raidxor_prepare_read_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
 		//rbio->bi_sector = stripe->units[i + k]->rdev->data_offset +
 		//	rxbio->sector / (chunk_size >> 9);
 
-		//rbio->bi_sector = rxbio->master_bio->bi_sector / conf->n_resources +
-		//	conf->units[i].rdev->data_offset;
 		rbio->bi_size = length;
 		rbio->bi_vcnt = npages;
 
@@ -1075,8 +1172,8 @@ static int raidxor_bio_on_boundary(stripe_t *stripe, struct bio *bio,
 	return (stripe->size - (newsector << 9)) < bio->bi_size;
 }
 
-static stripe_t * raidxor_sector_to_stripe(raidxor_conf_t *conf, sector_t sector,
-					   sector_t *newsector)
+static stripe_t *raidxor_sector_to_stripe(raidxor_conf_t *conf, sector_t sector,
+					  sector_t *newsector)
 {
 	unsigned int sectors_per_chunk = conf->chunk_size >> 9;
 	stripe_t **stripes = conf->stripes;
@@ -1131,12 +1228,8 @@ LOCKCONF(conf);
 
 UNLOCKCONF(conf);
 
-	if (rw == READ) {
-		printk (KERN_INFO "raidxor: handling read request\n");
-	}
-	else {
-		printk (KERN_INFO "raidxor: handling write request\n");
-	}
+	if (rw == READ) printk (KERN_INFO "raidxor: handling read request\n");
+	else printk (KERN_INFO "raidxor: handling write request\n");
 
 	return 0;
 
@@ -1145,7 +1238,7 @@ out:
 UNLOCKCONF(conf);
 	return 0;
 }
-
+
 static struct mdk_personality raidxor_personality =
 {
 	.name         = "raidxor",
