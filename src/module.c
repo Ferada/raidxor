@@ -376,11 +376,8 @@ static void raidxor_free_bio(struct bio *bio)
 static void raidxor_free_bios(raidxor_bio_t *rxbio)
 {
 	unsigned long i;
-	for (i = 0; i < rxbio->n_bios; ++i) {
-		if (rxbio->bios[i]) {
-			raidxor_free_bio(rxbio->bios[i]);
-		}
-	}
+	for (i = 0; i < rxbio->n_bios; ++i)
+		if (rxbio->bios[i]) raidxor_free_bio(rxbio->bios[i]);
 }
 
 /*
@@ -581,9 +578,8 @@ static void raidxor_end_write_request(struct bio *bio, int error)
 		// something like this needs to stop
 		//md_write_stop(rxbio->mddev, mbio);
 	}
-	else {
+	else
 		--rxbio->remaining;
-	}
 }
 
 static void raidxor_end_read_request(struct bio *bio, int error)
@@ -636,9 +632,8 @@ out:
 		bio_endio(mbio, 0);
 		kfree(rxbio);
 	}
-	else {
+	else
 		--rxbio->remaining;
-	}
 }
 
 /**
@@ -668,6 +663,82 @@ static void raidxor_xor_single(struct bio *bioto, struct bio *biofrom)
 	__bio_kunmap_atomic(biofrom, KM_USER0);
 	__bio_kunmap_atomic(bioto, KM_USER0);
 }
+
+#ifdef RAIDXOR_RUN_TESTCASES
+static int raidxor_test_case_xor_single(void)
+{
+	unsigned long i;
+	unsigned long length1, length2;
+	struct bio bio1, bio2;
+	struct bio_vec vs1[2], vs2[2];
+	unsigned char xor1, xor2;
+	unsigned char *data;
+
+	bio1.bi_io_vec = vs1;
+	bio2.bi_io_vec = vs2;
+
+	bio2.bi_vcnt = bio1.bi_vcnt = 2;
+
+	vs2[1].bv_len = vs1[1].bv_len = length1 = 42;
+	vs2[2].bv_len = vs1[2].bv_len = length2 = 1024;
+
+	bio2.bi_size = bio1.bi_size = 42 + 1024;
+
+	vs1[1].bv_page = alloc_page(GFP_NOIO);
+	vs1[2].bv_page = alloc_page(GFP_NOIO);
+	vs2[1].bv_page = alloc_page(GFP_NOIO);
+	vs2[2].bv_page = alloc_page(GFP_NOIO);
+
+	data = __bio_kmap_atomic(&bio1, 0, KM_USER0);
+	memset(data, 3, PAGE_SIZE);
+	__bio_kunmap_atomic(data, KM_USER0);
+
+	data = __bio_kmap_atomic(&bio1, 1, KM_USER0);
+	memset(data, 42, PAGE_SIZE);
+	__bio_kunmap_atomic(data, KM_USER0);
+
+	xor1 = 3 ^ 42;
+
+	data = __bio_kmap_atomic(&bio2, 0, KM_USER0);
+	memset(data, 15, PAGE_SIZE);
+	__bio_kunmap_atomic(data, KM_USER0);
+
+	data = __bio_kmap_atomic(&bio2, 1, KM_USER0);
+	memset(data, 23, PAGE_SIZE);
+	__bio_kunmap_atomic(data, KM_USER0);
+
+	xor2 = 15 ^ 23;
+
+	raidxor_xor_single(&bio1, &bio2);
+
+	data = __bio_kmap_atomic(&bio1, 0, KM_USER0);
+	for (i = 0; i < length1; ++i) {
+		if (data[i] != xor1) {
+			printk(KERN_INFO "raidxor: buffer 1 differs at byte"
+			       "%lu: %d != %d\n", i, data[i], xor1);
+			return 1;
+		}
+	}
+	__bio_kunmap_atomic(data, KM_USER0);
+
+	data = __bio_kmap_atomic(&bio1, 1, KM_USER0);
+	for (i = 0; i < length2; ++i) {
+		if (data[i] != xor2) {
+			printk(KERN_INFO "raidxor: buffer 2 differs at byte"
+			       "%lu: %d != %d\n", i, data[i], xor2);
+			return 1;
+		}
+	}
+	__bio_kunmap_atomic(data, KM_USER0);
+
+	safe_put_page(vs1[1].bv_page);
+	safe_put_page(vs1[2].bv_page);
+	safe_put_page(vs2[1].bv_page);
+	safe_put_page(vs2[2].bv_page);
+
+	return 0;
+}
+#endif
 
 /**
  * raidxor_check_same_size_and_layout() - checks two bios
@@ -703,17 +774,12 @@ static int raidxor_test_case_sizeandlayout(void)
 	bio1.bi_io_vec = vs1;
 	bio2.bi_io_vec = vs2;
 
-	bio1.bi_vcnt = 2;
-	bio2.bi_vcnt = 2;
+	bio2.bi_vcnt = bio1.bi_vcnt = 2;
 
-	vs1[1].bv_len = 42;
-	vs1[2].bv_len = 1024;
+	vs2[1].bv_len = vs1[1].bv_len = 42;
+	vs2[2].bv_len = vs1[2].bv_len = 1024;
 
-	vs2[1].bv_len = 3020;
-	vs2[2].bv_len = 43;
-
-	bio1.bi_size = 42 + 1024;
-	bio2.bi_size = 3020 + 43;
+	bio2.bi_size = bio1.bi_size = 42 + 1024;
 
 	if (raidxor_check_same_size_and_layout(&bio1, &bio2)) {
 		printk(KERN_INFO "raidxor: test case sizeandlayout/1 failed");
@@ -724,6 +790,14 @@ static int raidxor_test_case_sizeandlayout(void)
 
 	if (!raidxor_check_same_size_and_layout(&bio1, &bio2)) {
 		printk(KERN_INFO "raidxor: test case sizeandlayout/2 failed");
+		return 1;
+	}
+
+	vs1[1].bv_len = 42;
+	bio2.bi_size = 1024;
+
+	if (!raidxor_check_same_size_and_layout(&bio1, &bio2)) {
+		printk(KERN_INFO "raidxor: test case sizeandlayout/3 failed");
 		return 1;
 	}
 
@@ -1293,6 +1367,11 @@ static int raidxor_run_test_cases(void)
 {
 	if (raidxor_test_case_sizeandlayout()) {
 		printk(KERN_INFO "raidxor: test case sizeandlayout failed");
+		return 1;
+	}
+
+	if (raidxor_test_case_xor_single()) {
+		printk(KERN_INFO "raidxor: test case xor_single failed");
 		return 1;
 	}
 
