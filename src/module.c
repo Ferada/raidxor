@@ -609,8 +609,10 @@ static void raidxor_abort_request(raidxor_bio_t *rxbio, struct bio *bio,
 	/* mark faulty, regardless if we saw an error earlier */
 	md_error(rxbio->mddev, (unit) ? unit->rdev : NULL);
 	
-	/* only record error if we didn't already have one */
-	atomic_cmpxchg(&rxbio->status, RAIDXOR_BIO_STATUS_NORMAL, error);
+	/* only record error if we didn't already have one; we don't care
+	   about the previous value */
+	(void) atomic_cmpxchg(&rxbio->status, RAIDXOR_BIO_STATUS_NORMAL,
+			      error);
 }
 
 static void raidxor_end_write_request(struct bio *bio, int error)
@@ -623,9 +625,8 @@ static void raidxor_end_write_request(struct bio *bio, int error)
 	raidxor_free_bio(bio);
 	printk(KERN_INFO "put page, remaining %d\n", atomic_read(&rxbio->remaining));
 
-	if (error) {
+	if (error)
 		raidxor_abort_request(rxbio, bio, error);
-	}
 	if (atomic_dec_and_test(&rxbio->remaining)) {
 		kfree(rxbio);
 		bio_endio(mbio, atomic_read(&rxbio->status));
@@ -1207,10 +1208,9 @@ static int raidxor_prepare_read_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
 	       (unsigned long long) mbio->bi_sector,
 	       (unsigned long long) mbio->bi_size);
 
-	/* we only read from the data units at first */
+	/* we skip redundant units here! */
 	rxbio->n_bios = stripe->n_data_units;
 
-	/* TODO: this should become a atomic variable */
 	atomic_set(&rxbio->remaining, rxbio->n_bios);
 
 	/* how much do we have to copy? */
@@ -1253,12 +1253,22 @@ static int raidxor_prepare_read_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
 
 		printk(KERN_INFO "raidxor: device is %lu\n", i + k);
 
-		/* we need to use do_div here */
+		if (test_bit(Faulty, &stripe->units[i + k]->rdev->flags)) {
+			/* TODO: see if we have a decoding equation for this unit,
+			   then change bi_end_io and do something useful */
+			printk(KERN_INFO "raidxor: got a faulty drive"
+			       " during a request, skipping for now\n");
+			goto out_free_pages;
+		}
+
+		/* we need to use do_div here because of 64bit systems */
 		rbio->bi_sector = rxbio->sector;
 		do_div(rbio->bi_sector, chunk_size >> 9);
 		rbio->bi_sector += stripe->units[i + k]->rdev->data_offset;
-		//rbio->bi_sector = stripe->units[i + k]->rdev->data_offset +
-		//	rxbio->sector / (chunk_size >> 9);
+		/* equivalent to
+		   rbio->bi_sector = stripe->units[i + k]->rdev->data_offset + 
+				     rxbio->sector / (chunk_size >> 9);
+		*/
 
 		rbio->bi_size = length;
 		rbio->bi_vcnt = npages;
@@ -1478,10 +1488,17 @@ static void raidxor_status(struct seq_file *seq, mddev_t *mddev)
 	return;
 }
 
-static int raidxor_bio_on_boundary(stripe_t *stripe, struct bio *bio,
-				   sector_t newsector)
+static int raidxor_bio_maybe_split_boundary(stripe_t *stripe, struct bio *bio,
+					    sector_t newsector,
+					    struct bio_pair **split)
 {
-	return (stripe->size - (newsector << 9)) < bio->bi_size;
+	unsigned long result = stripe->size - (newsector << 9);
+	if (result < bio->bi_size) {
+		/* FIXME: what should first_sectors really be? */
+		*split = bio_split(bio, result);
+		return 1;
+	}
+	return 0;
 }
 
 static stripe_t * raidxor_sector_to_stripe(raidxor_conf_t *conf, sector_t sector,
@@ -1558,15 +1575,22 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 	raidxor_bio_t *rxbio;
 	stripe_t *stripe;
 	sector_t newsector;
+	struct bio_pair *split;
 
 	printk(KERN_INFO "raidxor: got request\n");
 
 	WITHLOCKCONF(conf, {
 	stripe = raidxor_sector_to_stripe(conf, bio->bi_sector, &newsector);
 
-	if (raidxor_bio_on_boundary(stripe, bio, newsector)) {
-		printk(KERN_INFO "raidxor: FIXME: bio lies on boundary\n");
-		goto out;
+	if (raidxor_bio_maybe_split_boundary(stripe, bio, newsector, &split)) {
+		if (!split)
+			goto out;
+
+		generic_make_request(&split->bio1);
+		generic_make_request(&split->bio2);
+		bio_pair_release(split);
+
+		return 0;
 	}
 
 	rxbio = kzalloc(sizeof(raidxor_bio_t) +
