@@ -547,6 +547,40 @@ static void raidxor_scatter_copy_data(struct bio *bioto, struct bio *biofrom,
 #undef NEXT_BVFROM
 #undef NEXT_BVTO
 
+
+/**
+ * raidxor_find_bio() - searches for the corresponding bio for a single unit
+ *
+ * Returns NULL if not found.
+ */
+static struct bio * raidxor_find_bio(raidxor_bio_t *rxbio, disk_info_t *unit)
+{
+	unsigned long i;
+
+	/* goes to the bdevs to find a matching bio */
+	for (i = 0; i < rxbio->n_bios; ++i)
+		if (rxbio->bios[i]->bi_bdev == unit->rdev->bdev)
+			return rxbio->bios[i];
+
+	return NULL;
+}
+
+/**
+ * raidxor_find_rdev() - searches for the corresponding unit for a single bio
+ *
+ * Returns NULL if not found.
+ */
+static disk_info_t * raidxor_find_unit(raidxor_bio_t *rxbio, struct bio *bio)
+{
+	unsigned long i;
+
+	for (i = 0; i < rxbio->stripe->n_units; ++i)
+		if (rxbio->stripe->units[i]->rdev->bdev == bio->bi_bdev)
+			return rxbio->stripe->units[i];
+
+	return NULL;
+}
+
 static unsigned long raidxor_compute_length(raidxor_conf_t *conf,
 					    stripe_t *stripe,
 					    struct bio *mbio,
@@ -571,25 +605,23 @@ static unsigned long raidxor_compute_length(raidxor_conf_t *conf,
 static void raidxor_end_write_request(struct bio *bio, int error)
 {
 	raidxor_bio_t *rxbio = (raidxor_bio_t *)(bio->bi_private);
-	//raidxor_conf_t *conf = mddev_to_conf(rxbio->mddev);
 	struct bio *mbio = rxbio->master_bio;
-	//stripe_t *stripe = rxbio->stripe;
 
-	printk(KERN_INFO "raidxor_end_write_request\n");
+	printk(KERN_INFO "raidxor_end_write_request, %d\n", error);
 
-//out:
 	raidxor_free_bio(bio);
-
 	printk(KERN_INFO "put page, remaining %lu\n", rxbio->remaining);
 
-	if (rxbio->remaining == 0) {
-		bio_endio(mbio, 0);
+	if (--rxbio->remaining == 0) {
 		kfree(rxbio);
-		// something like this needs to stop
-		//md_write_stop(rxbio->mddev, mbio);
+		bio_endio(mbio, error);
+		if (error) {
+			disk_info_t *unit = raidxor_find_unit(rxbio, bio);
+			md_error(rxbio->mddev, (unit) ? unit->rdev : NULL);
+		}
+		else
+			md_write_end(rxbio->mddev);
 	}
-	else
-		--rxbio->remaining;
 }
 
 static void raidxor_end_read_request(struct bio *bio, int error)
@@ -598,15 +630,14 @@ static void raidxor_end_read_request(struct bio *bio, int error)
 	raidxor_conf_t *conf = mddev_to_conf(rxbio->mddev);
 	unsigned long i, index;
 	struct bio *mbio = rxbio->master_bio;
-	//struct bio_vec *bvfrom;
-	//struct bio_vec *bvto;
-	//unsigned long from_offset;
 	unsigned long to_offset;
-	//char *mapped;
 	stripe_t *stripe = rxbio->stripe;
 	unsigned long length;
 
-	printk(KERN_INFO "raidxor_end_read_request\n");
+	printk(KERN_INFO "raidxor_end_read_request, %d\n", error);
+
+	if (error)
+		goto out;
 
 	for (i = 0, index = 0; i < stripe->n_units; ++i) {
 		if (stripe->units[i]->redundant == 0)
@@ -635,15 +666,12 @@ static void raidxor_end_read_request(struct bio *bio, int error)
 
 out:
 	raidxor_free_bio(bio);
-
 	printk(KERN_INFO "put page, remaining %lu\n", rxbio->remaining);
 
-	if (rxbio->remaining == 0) {
-		bio_endio(mbio, 0);
+	if (--rxbio->remaining == 0) {
 		kfree(rxbio);
+		bio_endio(mbio, error);
 	}
-	else
-		--rxbio->remaining;
 }
 
 /**
@@ -806,23 +834,6 @@ static int raidxor_test_case_sizeandlayout(void)
 	return 0;
 }
 #endif
-
-/**
- * raidxor_find_bio() - searches for the corresponding bio for a single unit
- *
- * Returns NULL if not found.
- */
-static struct bio * raidxor_find_bio(raidxor_bio_t *rxbio, struct disk_info *unit)
-{
-	unsigned long i;
-
-	/* goes to the bdevs to find a matching bio */
-	for (i = 0; i < rxbio->n_bios; ++i)
-		if (rxbio->bios[i]->bi_bdev == unit->rdev->bdev)
-			return rxbio->bios[i];
-
-	return NULL;
-}
 
 #ifdef RAIDXOR_RUN_TESTCASES
 static int raidxor_test_case_find_bio(void)
@@ -1112,9 +1123,7 @@ static int raidxor_prepare_write_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
 		rbio->bi_sector = rxbio->sector;
 		do_div(rbio->bi_sector, chunk_size >> 9);
 		//FIXME: whats with the k?, see preprare_read ...
-#if 0
-		rbio->bi_sector += stripe->units[i + k]->rdev->data_offset;
-#endif
+		rbio->bi_sector += stripe->units[i]->rdev->data_offset;
 
 		//rbio->bi_sector = stripe->units[i + k]->rdev->data_offset +
 		//	rxbio->sector / (chunk_size >> 9);
@@ -1296,27 +1305,17 @@ static void raidxord(mddev_t *mddev)
 				       " request aborted\n");
 				continue;
 			}
-
-			/* only used for md driver housekeeping */
-			//md_write_start(mddev, bio);
 		}
 
-		//bio_endio(bio, -EOPNOTSUPP);
-
-		// signal an read error to the md layer
-		//md_error(
-
-		// stop this transfer and signal an error to upper level (not md, but blk_queue)
-		//bio_io_error(bio); // == bio_endio(bio, -EIO)
-
 		spin_unlock(&conf->device_lock);
-
 		/* commit the requests */
 		for (i = 0; i < rxbio->n_bios; ++i)
-			if (rxbio->bios[i])
+			if (rxbio->bios[i]) {
+				/* only used for md driver housekeeping */
+				md_write_start(mddev, rxbio->bios[i]);
 				generic_make_request(rxbio->bios[i]);
+			}
 		++handled;
-
 		spin_lock(&conf->device_lock);
 	}
 	spin_unlock(&conf->device_lock);
@@ -1398,7 +1397,7 @@ static int raidxor_run(mddev_t *mddev)
 
 	/* used component size, multiple of chunk_size ... */
 	mddev->size = size & ~(conf->chunk_size / 1024 - 1);
-	/* exported size */
+	/* exported size, will be initialised later */
 	mddev->array_sectors = 0;
 
 	/* Ok, everything is just fine now */
@@ -1452,8 +1451,6 @@ static int raidxor_stop(mddev_t *mddev)
 
 static void raidxor_status(struct seq_file *seq, mddev_t *mddev)
 {
-	//raidxor_conf_t *conf = mddev_to_conf(mddev);
-
 	seq_printf(seq, " I'm feeling fine");
 	return;
 }
@@ -1465,7 +1462,7 @@ static int raidxor_bio_on_boundary(stripe_t *stripe, struct bio *bio,
 }
 
 static stripe_t * raidxor_sector_to_stripe(raidxor_conf_t *conf, sector_t sector,
-					  sector_t *newsector)
+					   sector_t *newsector)
 {
 	unsigned int sectors_per_chunk = conf->chunk_size >> 9;
 	stripe_t **stripes = conf->stripes;
@@ -1485,6 +1482,51 @@ static stripe_t * raidxor_sector_to_stripe(raidxor_conf_t *conf, sector_t sector
 	return stripes[i];
 }
 
+#ifdef RAIDXOR_RUN_TESTCASES
+static int raidxor_test_case_sector_to_stripe(void)
+{
+	unsigned int size = 10 * 4096 * 3;
+	stripe_t stripes[3] = { { .size = size },
+				{ .size = size },
+				{ .size = size } };
+	stripe_t *pstripes[3] = { &stripes[0], &stripes[1], &stripes[2] };
+	raidxor_conf_t conf = { .chunk_size = 4096, .n_stripes = 3,
+				.stripes = pstripes };
+	sector_t sector;
+	stripe_t *stripe;
+
+	if (&stripes[0] != (stripe = raidxor_sector_to_stripe(&conf, 0, &sector))) {
+		printk(KERN_INFO "raidxor: sector_to_stripe(0) resulted in %p, %d"
+		       " instead of %p, 0\n", stripe,
+		       (stripe == &stripes[1]) ? 1 : ((stripe == &stripes[2]) ? 2 : -1),
+		       &stripes[0]);
+		return 1;
+	}
+
+	if (sector != 0) {
+		printk(KERN_INFO "raidxor: sector_to_stripe(0) gave new sector %lu"
+		       " which was assumed to be 0\n", sector);
+		return 1;
+	}
+
+	if (&stripes[1] != (stripe = raidxor_sector_to_stripe(&conf, 250, &sector))) {
+		printk(KERN_INFO "raidxor: sector_to_stripe(0) resulted in %p, %d"
+		       " instead of %p, 1\n", stripe,
+		       (stripe == &stripes[1]) ? 1 : ((stripe == &stripes[2]) ? 2 : -1),
+		       &stripes[1]);
+		return 1;
+	}
+
+	if (sector != 10) {
+		printk(KERN_INFO "raidxor: sector_to_stripe(250) gave new sector %lu"
+		       " which was assumed to be 10\n", sector);
+		return 1;
+	}
+
+	return 0;
+}
+#endif
+
 static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 {
 	mddev_t *mddev = q->queuedata;
@@ -1496,8 +1538,7 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 
 	printk(KERN_INFO "raidxor: got request\n");
 
-LOCKCONF(conf);
-
+	WITHLOCKCONF(conf, {
 	stripe = raidxor_sector_to_stripe(conf, bio->bi_sector, &newsector);
 
 	if (raidxor_bio_on_boundary(stripe, bio, newsector)) {
@@ -1517,17 +1558,16 @@ LOCKCONF(conf);
 
 	list_add_tail(&rxbio->lru, &conf->handle_list);
 	md_wakeup_thread(conf->mddev->thread);
+	});
 
-UNLOCKCONF(conf);
-
-	if (rw == READ) printk(KERN_INFO "raidxor: handling read request\n");
-	else printk(KERN_INFO "raidxor: handling write request\n");
+	printk(KERN_INFO "raidxor: handling %s request\n",
+	       (rw == READ) ? "read" : "write");
 
 	return 0;
 
 out:
-	bio_io_error(bio);
 UNLOCKCONF(conf);
+	bio_io_error(bio);
 	return 0;
 }
 
@@ -1551,6 +1591,11 @@ static int raidxor_run_test_cases(void)
 
 	if (raidxor_test_case_xor_combine()) {
 		printk(KERN_INFO "raidxor: test case xor_combine failed");
+		return 1;
+	}
+
+	if (raidxor_test_case_sector_to_stripe()) {
+		printk(KERN_INFO "raidxor: test case sector_to_stripe failed");
 		return 1;
 	}
 
