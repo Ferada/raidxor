@@ -602,11 +602,15 @@ static unsigned long raidxor_compute_length(raidxor_conf_t *conf,
 	return result;
 }
 
-static void raidxor_abort_request(raidxor_bio_t *rxbio, struct bio *bio, int error)
+static void raidxor_abort_request(raidxor_bio_t *rxbio, struct bio *bio,
+				  int error)
 {
 	disk_info_t *unit = raidxor_find_unit(rxbio, bio);
+	/* mark faulty, regardless if we saw an error earlier */
 	md_error(rxbio->mddev, (unit) ? unit->rdev : NULL);
-	rxbio->status = error;
+	
+	/* only record error if we didn't already have one */
+	atomic_cmpxchg(&rxbio->status, RAIDXOR_BIO_STATUS_NORMAL, error);
 }
 
 static void raidxor_end_write_request(struct bio *bio, int error)
@@ -617,17 +621,15 @@ static void raidxor_end_write_request(struct bio *bio, int error)
 	printk(KERN_INFO "raidxor_end_write_request, %d\n", error);
 
 	raidxor_free_bio(bio);
-	printk(KERN_INFO "put page, remaining %lu\n", rxbio->remaining);
+	printk(KERN_INFO "put page, remaining %d\n", atomic_read(&rxbio->remaining));
 
 	if (error) {
-		if (rxbio->status == RAIDXOR_BIO_STATUS_NORMAL)
-			raidxor_abort_request(rxbio, bio, error);
-		/* ignore more errors */
+		raidxor_abort_request(rxbio, bio, error);
 	}
-	if (--rxbio->remaining == 0) {
+	if (atomic_dec_and_test(&rxbio->remaining)) {
 		kfree(rxbio);
-		bio_endio(mbio, rxbio->status);
-		if (rxbio->status != RAIDXOR_BIO_STATUS_NORMAL)
+		bio_endio(mbio, atomic_read(&rxbio->status));
+		if (atomic_read(&rxbio->status) != RAIDXOR_BIO_STATUS_NORMAL)
 			md_write_end(rxbio->mddev);
 	}
 }
@@ -644,7 +646,7 @@ static void raidxor_end_read_request(struct bio *bio, int error)
 
 	printk(KERN_INFO "raidxor_end_read_request, %d\n", error);
 
-	if (error || rxbio->status != RAIDXOR_BIO_STATUS_NORMAL)
+	if (error || atomic_read(&rxbio->status) != RAIDXOR_BIO_STATUS_NORMAL)
 		goto out;
 
 	for (i = 0, index = 0; i < stripe->n_units; ++i) {
@@ -674,15 +676,13 @@ static void raidxor_end_read_request(struct bio *bio, int error)
 
 out:
 	raidxor_free_bio(bio);
-	printk(KERN_INFO "put page, remaining %lu\n", rxbio->remaining);
+	printk(KERN_INFO "put page, remaining %d\n", atomic_read(&rxbio->remaining));
 
-	if (error) {
-		if (rxbio->status == RAIDXOR_BIO_STATUS_NORMAL)
-			raidxor_abort_request(rxbio, bio, error);
-	}
-	if (--rxbio->remaining == 0) {
+	if (error)
+		raidxor_abort_request(rxbio, bio, error);
+	if (atomic_dec_and_test(&rxbio->remaining)) {
 		kfree(rxbio);
-		bio_endio(mbio, rxbio->status);
+		bio_endio(mbio, atomic_read(&rxbio->status));
 	}
 }
 
@@ -1104,7 +1104,7 @@ static int raidxor_prepare_write_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
 	rxbio->n_bios = stripe->n_units;
 
 	/* TODO: this should become a atomic variable */
-	rxbio->remaining = rxbio->n_bios;
+	atomic_set(&rxbio->remaining, rxbio->n_bios);
 
 	/* how much do we have to copy? */
 	raidxor_compute_length_and_pages(stripe, mbio, &length, &npages);
@@ -1211,7 +1211,7 @@ static int raidxor_prepare_read_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
 	rxbio->n_bios = stripe->n_data_units;
 
 	/* TODO: this should become a atomic variable */
-	rxbio->remaining = rxbio->n_bios;
+	atomic_set(&rxbio->remaining, rxbio->n_bios);
 
 	/* how much do we have to copy? */
 	raidxor_compute_length_and_pages(stripe, mbio, &length, &npages);
@@ -1578,7 +1578,7 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 	rxbio->mddev = mddev;
 	rxbio->stripe = stripe;
 	rxbio->sector = newsector;
-	rxbio->status = 0;
+	atomic_set(&rxbio->status, RAIDXOR_BIO_STATUS_NORMAL);
 
 	list_add_tail(&rxbio->lru, &conf->handle_list);
 	md_wakeup_thread(conf->mddev->thread);
