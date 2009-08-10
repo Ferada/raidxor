@@ -602,6 +602,13 @@ static unsigned long raidxor_compute_length(raidxor_conf_t *conf,
 	return result;
 }
 
+static void raidxor_abort_request(raidxor_bio_t *rxbio, struct bio *bio, int error)
+{
+	disk_info_t *unit = raidxor_find_unit(rxbio, bio);
+	md_error(rxbio->mddev, (unit) ? unit->rdev : NULL);
+	rxbio->status = error;
+}
+
 static void raidxor_end_write_request(struct bio *bio, int error)
 {
 	raidxor_bio_t *rxbio = (raidxor_bio_t *)(bio->bi_private);
@@ -612,14 +619,15 @@ static void raidxor_end_write_request(struct bio *bio, int error)
 	raidxor_free_bio(bio);
 	printk(KERN_INFO "put page, remaining %lu\n", rxbio->remaining);
 
+	if (error) {
+		if (rxbio->status == RAIDXOR_BIO_STATUS_NORMAL)
+			raidxor_abort_request(rxbio, bio, error);
+		/* ignore more errors */
+	}
 	if (--rxbio->remaining == 0) {
 		kfree(rxbio);
-		bio_endio(mbio, error);
-		if (error) {
-			disk_info_t *unit = raidxor_find_unit(rxbio, bio);
-			md_error(rxbio->mddev, (unit) ? unit->rdev : NULL);
-		}
-		else
+		bio_endio(mbio, rxbio->status);
+		if (rxbio->status != RAIDXOR_BIO_STATUS_NORMAL)
 			md_write_end(rxbio->mddev);
 	}
 }
@@ -636,7 +644,7 @@ static void raidxor_end_read_request(struct bio *bio, int error)
 
 	printk(KERN_INFO "raidxor_end_read_request, %d\n", error);
 
-	if (error)
+	if (error || rxbio->status != RAIDXOR_BIO_STATUS_NORMAL)
 		goto out;
 
 	for (i = 0, index = 0; i < stripe->n_units; ++i) {
@@ -668,9 +676,13 @@ out:
 	raidxor_free_bio(bio);
 	printk(KERN_INFO "put page, remaining %lu\n", rxbio->remaining);
 
+	if (error) {
+		if (rxbio->status == RAIDXOR_BIO_STATUS_NORMAL)
+			raidxor_abort_request(rxbio, bio, error);
+	}
 	if (--rxbio->remaining == 0) {
 		kfree(rxbio);
-		bio_endio(mbio, error);
+		bio_endio(mbio, rxbio->status);
 	}
 }
 
@@ -1119,10 +1131,11 @@ static int raidxor_prepare_write_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
 			rbio->bi_io_vec[j].bv_offset = j * PAGE_SIZE;
 		}
 
+		rbio->bi_bdev = stripe->units[i]->rdev->bdev;
+
 		/* we need to use do_div here */
 		rbio->bi_sector = rxbio->sector;
 		do_div(rbio->bi_sector, chunk_size >> 9);
-		//FIXME: whats with the k?, see preprare_read ...
 		rbio->bi_sector += stripe->units[i]->rdev->data_offset;
 
 		//rbio->bi_sector = stripe->units[i + k]->rdev->data_offset +
@@ -1178,7 +1191,6 @@ static int raidxor_prepare_read_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
 	unsigned long npages, length;
 	unsigned long chunk_size = conf->chunk_size;
 	stripe_t *stripe = rxbio->stripe;
-	//disk_info_t *unit;
 
 	printk(KERN_INFO "raidxor: splitting from sector %llu, %llu bytes\n",
 	       (unsigned long long) mbio->bi_sector,
@@ -1555,6 +1567,7 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 	rxbio->mddev = mddev;
 	rxbio->stripe = stripe;
 	rxbio->sector = newsector;
+	rxbio->status = 0;
 
 	list_add_tail(&rxbio->lru, &conf->handle_list);
 	md_wakeup_thread(conf->mddev->thread);

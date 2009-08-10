@@ -100,6 +100,7 @@ struct stripe {
  * struct raidxor_private_data_s - private data per mddev
  * @mddev: the mddev we are associated to
  * @device_lock: lock for exclusive access to this raid
+ * @status: one of RAIDXOR_CONF_STATUS_{NORMAL,INCOMPLETE,ERROR}
  * @chunk_size: copied from mddev_t
  * @handle_list: requests needing handling
  * @configured: is 1 if we have all necessary information
@@ -117,12 +118,9 @@ struct raidxor_private_data_s {
 	mddev_t *mddev;
 	spinlock_t device_lock;
 
+	unsigned int status;
+
 	unsigned long chunk_size;
-
-	//mempool_t *rxbio_pool;
-
-	/* not yet used */
-	//struct bio_list pending_bio_list;
 
 	struct list_head handle_list;
 
@@ -152,10 +150,15 @@ struct raidxor_private_data_s {
 	do block while(0); \
 	UNLOCKCONF(conf);
 
+#define RAIDXOR_CONF_STATUS_NORMAL 0
+#define RAIDXOR_CONF_STATUS_INCOMPLETE 1
+#define RAIDXOR_CONF_STATUS_ERROR 2
+
 
 
 /**
  * struct raidxor_bio - private information for bio transfers from and to stripes
+ * @status: one of RAIDXOR_BIO_STATUS_{NORMAL,ERROR}
  * @remaining: the number of remaining transfers
  * @mddev: the raid device
  * @stripe: the stripe this bio is transfering from or to
@@ -168,6 +171,8 @@ struct raidxor_private_data_s {
  */
 struct raidxor_bio {
 	struct list_head lru;
+
+	unsigned int status;
 
 	unsigned long remaining;
 	mddev_t *mddev;
@@ -182,5 +187,7 @@ struct raidxor_bio {
 	unsigned long n_bios;
 	struct bio *bios[0];
 };
+
+#define RAIDXOR_BIO_STATUS_NORMAL 0
 
 #endif
