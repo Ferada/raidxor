@@ -1053,6 +1053,17 @@ static int raidxor_test_case_xor_combine(void)
 }
 #endif
 
+static void raidxor_error(mddev_t *mddev, mdk_rdev_t *rdev)
+{
+	char buffer[BDEVNAME_SIZE];
+
+	if (!test_bit(Faulty, &rdev->flags)) {
+		set_bit(Faulty, &rdev->flags);
+		printk(KERN_ALERT "raidxor: disk failure on %s, disabling"
+		       " device\n", bdevname(rdev->bdev, buffer));
+	}
+}
+
 static void raidxor_compute_length_and_pages(stripe_t *stripe,
 					     struct bio *mbio,
 					     unsigned long *length,
@@ -1629,7 +1640,7 @@ static struct mdk_personality raidxor_personality =
 	.status       = raidxor_status,
 
 	/* handles faulty disks, so we have to implement this one */
-	/* .error_handler = raidxor_error, */
+	.error_handler = raidxor_error,
 
 	/* .sync_request = raidxor_sync_request, */
 	/* .quiesce = raidxor_quiesce, */

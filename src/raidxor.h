@@ -152,7 +152,7 @@ struct raidxor_private_data_s {
 
 #define RAIDXOR_CONF_STATUS_NORMAL 0
 #define RAIDXOR_CONF_STATUS_INCOMPLETE 1
-#define RAIDXOR_CONF_STATUS_ERROR 2
+/* #define RAIDXOR_CONF_STATUS_ERROR 2 */
 
 
 
