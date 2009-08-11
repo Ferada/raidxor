@@ -1525,7 +1525,8 @@ static int raidxor_bio_maybe_split_boundary(stripe_t *stripe, struct bio *bio,
 	unsigned long result = stripe->size - (newsector << 9);
 	if (result < bio->bi_size) {
 		/* FIXME: what should first_sectors really be? */
-		*split = bio_split(bio, result);
+		//*split = bio_split(bio, NULL, result);
+		*split = NULL;
 		return 1;
 	}
 	return 0;
@@ -1547,7 +1548,7 @@ static stripe_t * raidxor_sector_to_stripe(raidxor_conf_t *conf, sector_t sector
 	       sectors_per_chunk);
 
 	for (i = 0; i < conf->n_stripes; ++i) {
-		printk(KERN_INFO "raidxor: stripe %lu, sector %lu\n", i, sector);
+	  printk(KERN_INFO "raidxor: stripe %lu, sector %lu\n", i, (unsigned long) sector);
 		if (sector <= stripes[i]->size >> 9)
 			break;
 		sector -= stripes[i]->size >> 9;
@@ -1582,7 +1583,7 @@ static int raidxor_test_case_sector_to_stripe(void)
 
 	if (sector != 0) {
 		printk(KERN_INFO "raidxor: sector_to_stripe(0) gave new sector %lu"
-		       " which was assumed to be 0\n", sector);
+		       " which was assumed to be 0\n", (unsigned long) sector);
 		return 1;
 	}
 
@@ -1596,7 +1597,7 @@ static int raidxor_test_case_sector_to_stripe(void)
 
 	if (sector != 10) {
 		printk(KERN_INFO "raidxor: sector_to_stripe(250) gave new sector %lu"
-		       " which was assumed to be 10\n", sector);
+		       " which was assumed to be 10\n", (unsigned long) sector);
 		return 1;
 	}
 
