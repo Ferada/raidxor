@@ -136,13 +136,20 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 
 	for (i = 0; i < conf->n_stripes; ++i) {
 		printk(KERN_INFO "direct: stripes[%lu] %p\n", i, stripes[i]);
-		stripes[i]->n_units = conf->n_resources;
+		stripes[i]->n_units = conf->n_units / conf->n_stripes;
+		printk(KERN_INFO "using %d units per stripe\n", stripes[i]->n_units);
+
 		stripes[i]->size = 0;
 
+		printk(KERN_INFO "going through %d units\n", stripes[i]->n_units);
+
 		for (j = 0; j < stripes[i]->n_units; ++j) {
-			unit = &conf->units[i * stripes[i]->n_units + j];
+			printk(KERN_INFO "using unit %d for stripe %d, index %d\n",
+			       i + conf->units_per_resource * j, i, j);
+			unit = &conf->units[i + conf->units_per_resource * j];
 
 			unit->stripe = stripes[i];
+
 			if (unit->redundant == 0) {
 				++stripes[i]->n_data_units;
 				stripes[i]->size += (unit->rdev->size * 2) &
@@ -150,6 +157,7 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 			}
 			stripes[i]->units[j] = unit;
 		}
+
 		size += stripes[i]->size / 2;
 
 		if (old_data_units == 0) {
@@ -157,8 +165,9 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 		}
 		else if (old_data_units != stripes[i]->n_data_units) {
 			printk(KERN_INFO "number of data units on two stripes"
-			       " are different: %u where we assumed %lu\n",
-			       stripes[i]->n_data_units, old_data_units);
+			       " are different: %u on stripe %d where we"
+			       " assumed %lu\n",
+			       i, stripes[i]->n_data_units, old_data_units);
 			goto out_free_stripes;
 		}
 	}
@@ -168,14 +177,38 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 	if (!mddev)
 		goto out_free_stripes;
 
+	printk(KERN_INFO "normally i'd like to set hardsect_size to %lu * %lu = %lu\n",
+	       old_data_units, conf->chunk_size, old_data_units * conf->chunk_size);
+	printk(KERN_INFO "and also to set the size to %lu sectors ...\n", size);
+
 	/* FIXME: device size must a multiple of chunk size */
+	/* FIXME: in what unit shold this be encoded? */
 	mddev->array_sectors = size;
 	set_capacity(mddev->gendisk, mddev->array_sectors);
+ 	goto out_free_stripes;
 
 	/* we only accept requests multiple of the number of data units
 	   times chunk size so we don't have to read something back manually
 	   for partial write operations;
 	   every request should now be M * N_DATA_UNITS * CHUNK_SIZE long */
+	/* FIXME: this crashes with
+Pid: 2701, comm: vol_id Tainted: G          (2.6.27.7-9-xen #1)
+EIP: 0061:[<c01a48fb>] EFLAGS: 00010287 CPU: 0
+EIP is at create_empty_buffers+0x13/0x9a
+
+Call Trace:
+ [<c01a722e>] block_read_full_page+0x46/0x2d8
+ [<c01662f0>] __do_page_cache_readahead+0x15b/0x181
+ [<c0166631>] page_cache_sync_readahead+0x2a/0x31
+ [<c015ff67>] do_generic_file_read+0xd7/0x408
+ [<c0160efd>] generic_file_aio_read+0x14a/0x17c
+ [<c0185018>] do_sync_read+0xc9/0x10c
+ [<c0185a13>] vfs_read+0x88/0x134
+ [<c0185b61>] sys_read+0x41/0x67
+ [<c0104e22>] syscall_call+0x7/0xb
+ [<f57fe416>] 0xf57fe416
+ =======================
+ 	*/
 	blk_queue_hardsect_size(mddev->queue, old_data_units * conf->chunk_size);
 
 	printk (KERN_INFO "raidxor: array_sectors is %llu blocks\n",
@@ -1622,6 +1655,7 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 	struct bio_pair *split;
 
 	printk(KERN_INFO "raidxor: got request\n");
+	goto out;
 
 	WITHLOCKCONF(conf, {
 	stripe = raidxor_sector_to_stripe(conf, bio->bi_sector, &newsector);
