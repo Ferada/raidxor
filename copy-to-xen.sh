@@ -3,6 +3,6 @@
 LOOP=/dev/loop10
 MOUNT=/mnt/copy
 
-mount $MOUNT
+mount $LOOP $MOUNT
 cp $* $MOUNT
 umount $MOUNT

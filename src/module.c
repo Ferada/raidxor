@@ -789,6 +789,7 @@ static int raidxor_test_case_xor_single(void)
 
 	data = __bio_kmap_atomic(&bio1, 1, KM_USER0);
 	for (i = 0; i < length2; ++i) {
+		printk(KERN_INFO "i = %lu\n", i);
 		if (data[i] != xor2) {
 			printk(KERN_INFO "raidxor: buffer 2 differs at byte"
 			       " %lu: %d != %d\n", i, data[i], xor2);
@@ -821,12 +822,16 @@ static int raidxor_check_same_size_and_layout(struct bio *x, struct bio *y)
 
 	/* have the same number of bio_vecs, */
 	if (x->bi_vcnt != y->bi_vcnt)
-		return 1;
+		return 2;
 
 	/* and those are of the same length, pairwise */
-	for (i = 0; i < x->bi_vcnt; ++i)
+	for (i = 0; i < x->bi_vcnt; ++i) {
+		/* FIXME: if this not printd, the test fails */
+		printk(KERN_INFO "comparing %d and %d\n",
+		   x->bi_io_vec[i].bv_len, y->bi_io_vec[i].bv_len);
 		if (x->bi_io_vec[i].bv_len != y->bi_io_vec[i].bv_len)
-			return 1;
+			return 3;
+	}
 
 	return 0;
 }
@@ -834,6 +839,7 @@ static int raidxor_check_same_size_and_layout(struct bio *x, struct bio *y)
 #ifdef RAIDXOR_RUN_TESTCASES
 static int raidxor_test_case_sizeandlayout(void)
 {
+	int result;
 	struct bio bio1, bio2;
 	struct bio_vec vs1[2], vs2[2];
 
@@ -842,28 +848,28 @@ static int raidxor_test_case_sizeandlayout(void)
 
 	bio2.bi_vcnt = bio1.bi_vcnt = 2;
 
-	vs2[1].bv_len = vs1[1].bv_len = 42;
-	vs2[2].bv_len = vs1[2].bv_len = 1024;
+	vs2[0].bv_len = vs1[0].bv_len = 42;
+	vs2[1].bv_len = vs1[1].bv_len = 1024;
 
 	bio2.bi_size = bio1.bi_size = 42 + 1024;
 
-	if (raidxor_check_same_size_and_layout(&bio1, &bio2)) {
-		printk(KERN_INFO "raidxor: test case sizeandlayout/1 failed");
+	if ((result = raidxor_check_same_size_and_layout(&bio1, &bio2))) {
+		printk(KERN_INFO "raidxor: test case sizeandlayout/1 failed: %d\n", result);
 		return 1;
 	}
 
 	vs1[1].bv_len = 32;
 
-	if (!raidxor_check_same_size_and_layout(&bio1, &bio2)) {
-		printk(KERN_INFO "raidxor: test case sizeandlayout/2 failed");
+	if (!(result = raidxor_check_same_size_and_layout(&bio1, &bio2))) {
+		printk(KERN_INFO "raidxor: test case sizeandlayout/2 failed: %d\n", result);
 		return 1;
 	}
 
 	vs1[1].bv_len = 42;
 	bio2.bi_size = 1024;
 
-	if (!raidxor_check_same_size_and_layout(&bio1, &bio2)) {
-		printk(KERN_INFO "raidxor: test case sizeandlayout/3 failed");
+	if (!(result = raidxor_check_same_size_and_layout(&bio1, &bio2))) {
+		printk(KERN_INFO "raidxor: test case sizeandlayout/3 failed: %d\n", result);
 		return 1;
 	}
 
@@ -886,8 +892,8 @@ static int raidxor_test_case_find_bio(void)
 	unit1.resource = unit2.resource = NULL;
 	unit1.stripe = unit2.stripe = NULL;
 
-	rdev1.bdev = (void *) 0xdeadbeef;
-	rdev2.bdev = (void *) 0xcafecafe;
+	bio1.bi_bdev = rdev1.bdev = (void *) 0xdeadbeef;
+	bio2.bi_bdev = rdev2.bdev = (void *) 0xcafecafe;
 
 	rxbio = kzalloc(sizeof(raidxor_bio_t) +
 			sizeof(struct bio *) * 3, GFP_NOIO);
@@ -1660,26 +1666,32 @@ UNLOCKCONF(conf);
 #ifdef RAIDXOR_RUN_TESTCASES
 static int raidxor_run_test_cases(void)
 {
+	printk(KERN_INFO "raidxor: running test case sizeandlayout\n");
 	if (raidxor_test_case_sizeandlayout()) {
 		printk(KERN_INFO "raidxor: test case sizeandlayout failed");
 		return 1;
 	}
-
+#if 0
+	printk(KERN_INFO "raidxor: running test case xor_single\n");
 	if (raidxor_test_case_xor_single()) {
 		printk(KERN_INFO "raidxor: test case xor_single failed");
 		return 1;
 	}
-
+#endif
+	printk(KERN_INFO "raidxor: running test case find_bio\n");
 	if (raidxor_test_case_find_bio()) {
 		printk(KERN_INFO "raidxor: test case find_bio failed");
 		return 1;
 	}
 
+#if 0
+	printk(KERN_INFO "raidxor: running test case xor_combine\n");
 	if (raidxor_test_case_xor_combine()) {
 		printk(KERN_INFO "raidxor: test case xor_combine failed");
 		return 1;
 	}
-
+#endif
+	printk(KERN_INFO "raidxor: running test case sector_to_stripe\n");
 	if (raidxor_test_case_sector_to_stripe()) {
 		printk(KERN_INFO "raidxor: test case sector_to_stripe failed");
 		return 1;
@@ -1712,7 +1724,7 @@ static int __init raidxor_init(void)
 {
 	#ifdef RAIDXOR_RUN_TESTCASES
 	if (raidxor_run_test_cases())
-		return 1;
+		return -1;
 	#endif
 
 	return register_md_personality(&raidxor_personality);
