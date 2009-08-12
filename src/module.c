@@ -8,6 +8,11 @@
 #define RAIDXOR_RUN_TESTCASES 1
 
 #ifdef RAIDXOR_RUN_TESTCASES
+/**
+ * raidxor_fill_bio() - sets the buffer at index and length to value
+ *
+ * Crashes because of __bio_kmap_atomic.
+ */
 static void raidxor_fill_bio(struct bio *bio, unsigned long idx,
 			     unsigned char value, unsigned long length)
 {
@@ -20,6 +25,11 @@ static void raidxor_fill_bio(struct bio *bio, unsigned long idx,
 	__bio_kunmap_atomic(data, KM_USER0);
 }
 
+/**
+ * raidxor_fill_page() - fills page with a value
+ *
+ * Copies value length times into the page buffer.
+ */
 static void raidxor_fill_page(struct page *page, unsigned char value,
 			      unsigned long length)
 {
@@ -192,7 +202,7 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 	printk(KERN_INFO "normally i'd like to set hardsect_size to %lu * %lu = %lu\n",
 	       old_data_units, conf->chunk_size, old_data_units * conf->chunk_size);
 	printk(KERN_INFO "and also to set the size to %lu sectors ...\n", size);
- 	goto out_free_stripes;
+
 
 	/* FIXME: device size must a multiple of chunk size */
 	/* FIXME: in what unit shold this be encoded? */
@@ -222,6 +232,8 @@ Call Trace:
  [<f57fe416>] 0xf57fe416
  =======================
  	*/
+	printk(KERN_EMERG "raidxor: queue_hardsect_size(mddev->queue, %lu * %lu) called\n",
+	       old_data_units, conf->chunk_size);
 	blk_queue_hardsect_size(mddev->queue, old_data_units * conf->chunk_size);
 
 	printk (KERN_INFO "raidxor: array_sectors is %llu blocks\n",
@@ -1610,6 +1622,8 @@ static int raidxor_run(mddev_t *mddev)
 	conf->stripes = NULL;
 	conf->n_units = mddev->raid_disks;
 
+	blk_queue_hardsect_size(mddev->queue, 2 * conf->chunk_size);
+
 	spin_lock_init(&conf->device_lock);
 	mddev->queue->queue_lock = &conf->device_lock;
 
@@ -1720,11 +1734,11 @@ static stripe_t * raidxor_sector_to_stripe(raidxor_conf_t *conf, sector_t sector
 	stripe_t **stripes = conf->stripes;
 	unsigned long i;
 
-	printk(KERN_INFO "raidxor: sectors_per_chunk %u\n",
+	printk(KERN_EMERG "raidxor: sectors_per_chunk %u\n",
 	       sectors_per_chunk);
 
 	for (i = 0; i < conf->n_stripes; ++i) {
-	  printk(KERN_INFO "raidxor: stripe %lu, sector %lu\n", i, (unsigned long) sector);
+		printk(KERN_EMERG "raidxor: stripe %lu, sector %lu\n", i, (unsigned long) sector);
 		if (sector <= stripes[i]->size >> 9)
 			break;
 		sector -= stripes[i]->size >> 9;
@@ -1791,11 +1805,15 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 	sector_t newsector;
 	struct bio_pair *split;
 
-	printk(KERN_INFO "raidxor: got request\n");
-	goto out;
-
 	WITHLOCKCONF(conf, {
+	printk(KERN_EMERG "raidxor: got request\n");
+
+	printk(KERN_EMERG "raidxor: sector_to_stripe(conf, %lu, &newsector) called\n",
+	       bio->bi_sector);
+
 	stripe = raidxor_sector_to_stripe(conf, bio->bi_sector, &newsector);
+
+	goto out;
 
 	if (raidxor_bio_maybe_split_boundary(stripe, bio, newsector, &split)) {
 		if (!split)
