@@ -203,7 +203,6 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 	       old_data_units, conf->chunk_size, old_data_units * conf->chunk_size);
 	printk(KERN_INFO "and also to set the size to %lu sectors ...\n", size);
 
-
 	/* FIXME: device size must a multiple of chunk size */
 	/* FIXME: in what unit shold this be encoded? */
 	/* FIXME: this is also breaks, somehow */
@@ -232,9 +231,11 @@ Call Trace:
  [<f57fe416>] 0xf57fe416
  =======================
  	*/
+#if 0
 	printk(KERN_EMERG "raidxor: queue_hardsect_size(mddev->queue, %lu * %lu) called\n",
 	       old_data_units, conf->chunk_size);
 	blk_queue_hardsect_size(mddev->queue, old_data_units * conf->chunk_size);
+#endif
 
 	printk (KERN_INFO "raidxor: array_sectors is %llu blocks\n",
 		(unsigned long long) mddev->array_sectors * 2);
@@ -1622,7 +1623,12 @@ static int raidxor_run(mddev_t *mddev)
 	conf->stripes = NULL;
 	conf->n_units = mddev->raid_disks;
 
-	blk_queue_hardsect_size(mddev->queue, 2 * conf->chunk_size);
+	printk(KERN_EMERG "whoo, setting hardsect size to %d\n", 2 * conf->chunk_size);
+	/* FIXME: this is only temporary. don't change the example config
+	   without also changing this definition */
+	#if 0
+	blk_queue_hardsect_size(mddev->queue, 512 /* 2 * conf->chunk_size */);
+	#endif
 
 	spin_lock_init(&conf->device_lock);
 	mddev->queue->queue_lock = &conf->device_lock;
