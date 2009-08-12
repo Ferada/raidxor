@@ -12,8 +12,20 @@ static void raidxor_fill_bio(struct bio *bio, unsigned long idx,
 			     unsigned char value, unsigned long length)
 {
 	unsigned char *data = __bio_kmap_atomic(bio, idx, KM_USER0);
+	if (!data) {
+		printk(KERN_INFO "raidxor: page mapping failed\n");
+		return;
+	}
 	memset(data, value, length);
 	__bio_kunmap_atomic(data, KM_USER0);
+}
+
+static void raidxor_fill_page(struct page *page, unsigned char value,
+			      unsigned long length)
+{
+	unsigned char *data = kmap(page);
+	memset(data, value, length);
+	kunmap(page);
 }
 #endif
 
@@ -180,12 +192,13 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 	printk(KERN_INFO "normally i'd like to set hardsect_size to %lu * %lu = %lu\n",
 	       old_data_units, conf->chunk_size, old_data_units * conf->chunk_size);
 	printk(KERN_INFO "and also to set the size to %lu sectors ...\n", size);
+ 	goto out_free_stripes;
 
 	/* FIXME: device size must a multiple of chunk size */
 	/* FIXME: in what unit shold this be encoded? */
+	/* FIXME: this is also breaks, somehow */
 	mddev->array_sectors = size;
 	set_capacity(mddev->gendisk, mddev->array_sectors);
- 	goto out_free_stripes;
 
 	/* we only accept requests multiple of the number of data units
 	   times chunk size so we don't have to read something back manually
@@ -798,17 +811,33 @@ static int raidxor_test_case_xor_single(void)
 	vs2[0].bv_page = alloc_page(GFP_NOIO);
 	vs2[1].bv_page = alloc_page(GFP_NOIO);
 
+	printk(KERN_INFO "*** first!\n");
+
+	raidxor_fill_page(vs1[0].bv_page, 3, PAGE_SIZE);
+	raidxor_fill_page(vs1[1].bv_page, 42, PAGE_SIZE);
+#if 0
 	raidxor_fill_bio(&bio1, 0, 3, PAGE_SIZE);
 	raidxor_fill_bio(&bio2, 0, 42, PAGE_SIZE);
+#endif
+
+	printk(KERN_INFO "*** second!\n");
 
 	xor1 = 3 ^ 42;
 
+	raidxor_fill_page(vs2[0].bv_page, 15, PAGE_SIZE);
+	raidxor_fill_page(vs2[1].bv_page, 23, PAGE_SIZE);
+#if 0
 	raidxor_fill_bio(&bio1, 1, 15, PAGE_SIZE);
 	raidxor_fill_bio(&bio2, 1, 23, PAGE_SIZE);
+#endif
 
 	xor2 = 15 ^ 23;
 
+	printk(KERN_INFO "*** third!\n");
+
 	raidxor_xor_single(&bio1, &bio2);
+
+	printk(KERN_INFO "*** fourth!\n");
 
 	data = __bio_kmap_atomic(&bio1, 0, KM_USER0);
 	for (i = 0; i < length1; ++i) {
@@ -820,6 +849,8 @@ static int raidxor_test_case_xor_single(void)
 	}
 	__bio_kunmap_atomic(data, KM_USER0);
 
+	printk(KERN_INFO "*** fifth!\n");
+
 	data = __bio_kmap_atomic(&bio1, 1, KM_USER0);
 	for (i = 0; i < length2; ++i) {
 		printk(KERN_INFO "i = %lu\n", i);
@@ -830,6 +861,8 @@ static int raidxor_test_case_xor_single(void)
 		}
 	}
 	__bio_kunmap_atomic(data, KM_USER0);
+
+	printk(KERN_INFO "*** sixth!\n");
 
 	safe_put_page(vs1[0].bv_page);
 	safe_put_page(vs1[1].bv_page);
@@ -1705,7 +1738,7 @@ static int raidxor_run_test_cases(void)
 		printk(KERN_INFO "raidxor: test case sizeandlayout failed");
 		return 1;
 	}
-#if 0
+#if 1
 	printk(KERN_INFO "raidxor: running test case xor_single\n");
 	if (raidxor_test_case_xor_single()) {
 		printk(KERN_INFO "raidxor: test case xor_single failed");
