@@ -1623,12 +1623,8 @@ static int raidxor_run(mddev_t *mddev)
 	conf->stripes = NULL;
 	conf->n_units = mddev->raid_disks;
 
-	printk(KERN_EMERG "whoo, setting hardsect size to %d\n", 2 * conf->chunk_size);
-	/* FIXME: this is only temporary. don't change the example config
-	   without also changing this definition */
-	#if 0
-	blk_queue_hardsect_size(mddev->queue, 512 /* 2 * conf->chunk_size */);
-	#endif
+	printk(KERN_EMERG "whoo, setting hardsect size to %d\n", 512);
+	blk_queue_hardsect_size(mddev->queue, 512);
 
 	spin_lock_init(&conf->device_lock);
 	mddev->queue->queue_lock = &conf->device_lock;

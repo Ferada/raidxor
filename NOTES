@@ -1,5 +1,53 @@
 <!-- -*- mode: markdown; -*- -->
+
+Cache für einzelne Linien innerhalb eines Stripes, d.h. chunk_size *
+length(stripe) große Linien.  Wenn eine Anfrage kommt, die kleiner ist, als
+diese Größe, wird zuerst eine Linie von den Speichermedien geladen und
+anschließend mittels dieser Daten die Anfrage bearbeitet (entweder von dort
+gelesen, oder mit den gelesenen Daten kombiniert und zurückgeschrieben).
 
+Alle Anfragen müssen kleiner gleich einer Cacheline sein (was über die
+Einstellungen der Anfragequeue sichergestellt wird).
+
+Ähnliche Funktionalität ist in raid5.c vorhanden.
+
+cache_line_write_back(cache_line)
+sector_to_cache_line(cache_line) : sector_t
+
+struct cache_line {
+       /* lock must be hold when data in this line is manipulated */
+       lock_t lock;
+       /* corresponding stripe */
+       raidxor_stripe_t *stripe;
+       /* the index of this cache line from the beginning of the stripe */
+       unsigned long index;
+       /* either DIRTY, WRITEBACK or CLEAN */
+       unsigned int status;
+       /* the number of allocated pages (same as the number of units in
+          the stripe */
+       unsigned long length;
+       struct *page[0];
+};
+
+Eine Cacheline hat entweder den Status CLEAN oder DIRTY.  Wenn eine
+Leseanfrage hereinkommt, deren Offset in eine geladenen Cacheline fällt, wird
+die Anfrage aus dem Cache bearbeitet, ansonsten wird sie nachgeladen.
+
+Wenn der Cache voll ist, aber eine neue Cacheline geladen werden muss, werden
+Lines mit CLEAN nur gelöscht, solche mit DIRTY zuerst zurückgeschrieben.
+Während des Zurückschreibens wird die Cacheline mit WRITEBACK markiert.
+
+D.h. alle Anfragen gehen zuerst an den Cachelayer, der nur große Blöcke an die
+darunterliegenden Geräte zulässt.  Der Cache sorgt dafür, das die Daten immer
+gültig sind und verhandelt die Kommunikation mit den Speichergeräten.
+
+Der Zugriff auf einzelne Cachelines ist nur über den Lock des Caches möglich.
+
+Es wäre möglich, für den Zugriff auf den gesamten Cache (Line einfügen, Line
+löschen) und den Zugriff auf einzelne Lines (Daten schreiben, Daten lesen)
+einen Read-Write-Lock für den Cache einzusetzen, da (vermutlich) das Einfügen
+und Löschen von Lines seltener passiert, als Daten innerhalb einer Line
+bearbeitet werden.
 Plan
 ----
 - raid{0,1,5}.c zusammenkürzen und ausdrucken
