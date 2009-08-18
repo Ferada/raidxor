@@ -8,6 +8,7 @@
 #define RAIDXOR_RUN_TESTCASES 1
 
 #ifdef RAIDXOR_RUN_TESTCASES
+#if 0
 /**
  * raidxor_fill_bio() - sets the buffer at index and length to value
  *
@@ -24,6 +25,7 @@ static void raidxor_fill_bio(struct bio *bio, unsigned long idx,
 	memset(data, value, length);
 	__bio_kunmap_atomic(data, KM_USER0);
 }
+#endif
 
 /**
  * raidxor_fill_page() - fills page with a value
@@ -166,7 +168,7 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 		printk(KERN_INFO "going through %d units\n", stripes[i]->n_units);
 
 		for (j = 0; j < stripes[i]->n_units; ++j) {
-			printk(KERN_INFO "using unit %d for stripe %d, index %d\n",
+			printk(KERN_INFO "using unit %lu for stripe %lu, index %lu\n",
 			       i + conf->units_per_resource * j, i, j);
 			unit = &conf->units[i + conf->units_per_resource * j];
 
@@ -187,12 +189,16 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 		}
 		else if (old_data_units != stripes[i]->n_data_units) {
 			printk(KERN_INFO "number of data units on two stripes"
-			       " are different: %u on stripe %d where we"
+			       " are different: %lu on stripe %d where we"
 			       " assumed %lu\n",
 			       i, stripes[i]->n_data_units, old_data_units);
 			goto out_free_stripes;
 		}
 	}
+
+	/* allocate the cache with a default of 10 lines;
+	   could be a driver option, or allow for shrinking/growing ... */	
+	conf->cache = allocate_cache(10, stripes[0]->n_data_units);
 
 	printk(KERN_INFO "setting device size\n");
 
@@ -201,7 +207,7 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 
 	printk(KERN_INFO "normally i'd like to set hardsect_size to %lu * %lu = %lu\n",
 	       old_data_units, conf->chunk_size, old_data_units * conf->chunk_size);
-	printk(KERN_INFO "and also to set the size to %lu sectors ...\n", size);
+	printk(KERN_INFO "and also to set the size to %llu sectors ...\n", size);
 
 	/* FIXME: device size must a multiple of chunk size */
 	/* FIXME: in what unit shold this be encoded? */
@@ -433,6 +439,78 @@ static struct attribute_group raidxor_attrs_group = {
 	.name = NULL,
 	.attrs = raidxor_attrs,
 };
+
+static void cache_drop_line(cache_t *cache, unsigned int n)
+{
+	unsigned int i;
+
+	if (!cache || n >= cache->n_lines) return;
+
+	for (i = 0; i < cache->n_buffers; ++i)
+		safe_put_page(cache->lines[n].buffers[i]);
+}
+
+static void free_cache(cache_t *cache)
+{
+	unsigned int i;
+
+	if (!cache) return;
+
+	for (i = 0; i < cache->n_lines; ++i)
+		cache_drop_line(cache, i);
+
+	kfree(cache);
+}
+
+/**
+ * allocate_cache() - allocates a new cache with buffers
+ * @n_lines: number of available lines in the cache
+ * @n_buffers: buffers per line (equivalent to the width of a stripe)
+ */
+static cache_t * allocate_cache(unsigned int n_lines, unsigned int n_buffers)
+{
+	unsigned int i, j;
+	cache_t *cache;
+
+	cache = kzalloc(sizeof(cache_t) +
+			(sizeof(cache_line_t) +
+			 sizeof(struct page *) * n_buffers) * n_lines,
+			GFP_NOIO);
+	if (!cache)
+		goto out;
+
+	cache->n_lines = n_lines;
+	cache->n_buffers = n_buffers;
+
+	for (i = 0; i < n_lines; ++i)
+		for (j = 0; j < n_buffers; ++j)
+			atomic_set(&cache->lines[i].flags, CACHE_LINE_CLEAN);
+
+out:
+	return NULL;
+}
+
+#if 0
+//cache->lines[i].buffers[j] = alloc_page(GFP_NOIO);
+if (!cache->lines[i].buffers[j])
+	goto out_free_lines;
+#endif
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 /**
  * raidxor_free_bio() - puts all pages in a bio and the bio itself
@@ -800,7 +878,7 @@ static void raidxor_copy_bio(struct bio *bioto, struct bio *biofrom)
  */
 static void raidxor_xor_single(struct bio *bioto, struct bio *biofrom)
 {
-	unsigned long i, j, flagsfrom, flagsto;
+	unsigned long i, j;
 	struct bio_vec *bvto, *bvfrom;
 	unsigned char *tomapped, *frommapped;
 	unsigned char *toptr, *fromptr;
@@ -1109,7 +1187,7 @@ static int raidxor_xor_combine(struct bio *bioto, raidxor_bio_t *rxbio,
 
 	/* then, xor the other buffers to the first one */
 	for (i = 1; i < encoding->n_units; ++i) {
-		printk(KERN_INFO "encoding unit %d out of %d\n", i,
+		printk(KERN_INFO "encoding unit %lu out of %d\n", i,
 		       encoding->n_units);
 		/* search for the right bio */
 		biofrom = raidxor_find_bio(rxbio, encoding->units[i]);
@@ -1623,8 +1701,8 @@ static int raidxor_run(mddev_t *mddev)
 	conf->stripes = NULL;
 	conf->n_units = mddev->raid_disks;
 
-	printk(KERN_EMERG "whoo, setting hardsect size to %d\n", 512);
-	blk_queue_hardsect_size(mddev->queue, 512);
+	printk(KERN_EMERG "whoo, setting hardsect size to %d\n", 4096);
+	blk_queue_hardsect_size(mddev->queue, 4096);
 
 	spin_lock_init(&conf->device_lock);
 	mddev->queue->queue_lock = &conf->device_lock;
@@ -1810,7 +1888,7 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 	WITHLOCKCONF(conf, {
 	printk(KERN_EMERG "raidxor: got request\n");
 
-	printk(KERN_EMERG "raidxor: sector_to_stripe(conf, %lu, &newsector) called\n",
+	printk(KERN_EMERG "raidxor: sector_to_stripe(conf, %llu, &newsector) called\n",
 	       bio->bi_sector);
 
 	stripe = raidxor_sector_to_stripe(conf, bio->bi_sector, &newsector);

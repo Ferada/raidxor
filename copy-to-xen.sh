@@ -3,6 +3,6 @@
 LOOP=/dev/loop10
 MOUNT=/mnt/copy
 
-mount $LOOP $MOUNT
+mount -t ext3 $LOOP $MOUNT
 cp $* $MOUNT
 umount $MOUNT

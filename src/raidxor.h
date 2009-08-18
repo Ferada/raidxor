@@ -14,7 +14,75 @@ typedef struct raidxor_bio raidxor_bio_t;
 typedef struct raidxor_private_data_s raidxor_conf_t;
 typedef struct stripe stripe_t;
 typedef struct raidxor_resource raidxor_resource_t;
+typedef struct cache cache_t;
+typedef struct cache_line cache_line_t;
 
+
+
+/**
+ * struct cache_line - buffers multiple blocks over a stripe
+ * @flags: current status of the line
+ * @sector: index into the virtual device
+ * @buffers: actual data
+ */
+struct cache_line {
+	atomic_t flags;
+	sector_t sector;
+
+	struct page *buffers[0];
+};
+
+
+
+/**
+ * struct cache - groups access to the individual cache lines
+ *
+ * device_lock needs to be hold when accessing the cache.
+ */
+struct cache {
+	unsigned int n_lines, n_buffers;
+
+	cache_line_t lines[0];
+};
+
+#define CACHE_LINE_CLEAN 0
+#define CACHE_LINE_UPTODATE 1
+#define CACHE_LINE_DIRTY 2
+#define CACHE_LINE_WRITEBACK 3
+
+static cache_t * allocate_cache(unsigned int n_lines, unsigned int n_buffers);
+
+/*
+   Life cycle of a cache line:
+
+   CLEAN: no pages are allocated
+
+   +=======+ 1 	+-------+ 2  +---------+
+   ¦ CLEAN ¦<==>| READY |<==>| LOADING |
+   +=======+  	+-------+    +---------+
+		  ^ 	   	---
+		  | 	-------/
+		 4|    /   3
+                  |   v
+                +----------+
+                | UPTODATE |<-\ 7
+                +----------+   ----\
+         	 5 |	   	    \+----------+
+		   v	 	  /=>| WRITEBACK|
+		+----------+  /===   +----------+
+		|  DIRTY   |<=  6
+		+----------+
+   1: allocating pages or dropping them
+   2: loading data from disk
+   3: finishing read from disk
+   4: dropping a cache line
+   5: write some data to the cache
+   6: start writeback process
+   7: finishing writeback, data in cache and on device is now synchronised
+
+   if the writeback/loading fails, operation 6 is reversed, that is,
+   writeback/loading is not successful, so we get back to dirty/ready
+ */
 
 
 /**
@@ -116,13 +184,15 @@ struct stripe {
  **/
 struct raidxor_private_data_s {
 	mddev_t *mddev;
-	spinlock_t device_lock;
+ 	spinlock_t device_lock;
 
 	unsigned int status;
 
 	unsigned long chunk_size;
 
 	struct list_head handle_list;
+
+	cache_t *cache;
 
 	unsigned int configured;
 
