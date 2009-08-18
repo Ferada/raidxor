@@ -79,7 +79,7 @@ static void raidxor_safe_free_conf(raidxor_conf_t *conf) {
  * completes the configuration with the data.
  */
 static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
-	raidxor_resource_t **resources;
+	resource_t **resources;
 	stripe_t **stripes;
 	disk_info_t *unit;
 	unsigned long i, j, old_data_units = 0;
@@ -119,13 +119,13 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 
 	printk(KERN_INFO "raidxor: got enough information, building raid\n");
 
-	resources = kzalloc(sizeof(raidxor_resource_t *) * conf->n_resources,
+	resources = kzalloc(sizeof(resource_t *) * conf->n_resources,
 			    GFP_KERNEL);
 	if (!resources)
 		goto out;
 
 	for (i = 0; i < conf->n_resources; ++i) {
-		resources[i] = kzalloc(sizeof(raidxor_resource_t) +
+		resources[i] = kzalloc(sizeof(resource_t) +
 				       (sizeof(disk_info_t *) *
 					conf->units_per_resource), GFP_KERNEL);
 		if (!resources[i])
@@ -919,10 +919,6 @@ static int raidxor_test_case_xor_single(void)
 
 	raidxor_fill_page(vs1[0].bv_page, 3, PAGE_SIZE);
 	raidxor_fill_page(vs1[1].bv_page, 42, PAGE_SIZE);
-#if 0
-	raidxor_fill_bio(&bio1, 0, 3, PAGE_SIZE);
-	raidxor_fill_bio(&bio2, 0, 42, PAGE_SIZE);
-#endif
 
 	printk(KERN_INFO "*** second!\n");
 
@@ -930,10 +926,6 @@ static int raidxor_test_case_xor_single(void)
 
 	raidxor_fill_page(vs2[0].bv_page, 15, PAGE_SIZE);
 	raidxor_fill_page(vs2[1].bv_page, 23, PAGE_SIZE);
-#if 0
-	raidxor_fill_bio(&bio1, 1, 15, PAGE_SIZE);
-	raidxor_fill_bio(&bio2, 1, 23, PAGE_SIZE);
-#endif
 
 	xor2 = 42 ^ 23;
 
@@ -943,9 +935,6 @@ static int raidxor_test_case_xor_single(void)
 
 	printk(KERN_INFO "*** fourth!\n");
 
-#if 0
-	data = __bio_kmap_atomic(&bio1, 0, KM_USER0);
-#endif
 	/* raidxor: buffer 1 differs at byte 0: 3 != 41 */
 	data = kmap(vs1[0].bv_page);
 	for (i = 0; i < length1; ++i) {
@@ -955,30 +944,18 @@ static int raidxor_test_case_xor_single(void)
 			return 1;
 		}
 	}
-#if 0
-	__bio_kunmap_atomic(data, KM_USER0);
-#endif
 	kunmap(vs1[0].bv_page);
 
 	printk(KERN_INFO "*** fifth!\n");
 
-#if 0
-	data = __bio_kmap_atomic(&bio1, 1, KM_USER0);
-#endif
 	data = kmap(vs1[1].bv_page);
 	for (i = 0; i < length2; ++i) {
-#if 0
-		printk(KERN_INFO "i = %lu\n", i);
-#endif
 		if (data[i] != xor2) {
 			printk(KERN_INFO "raidxor: buffer 2 differs at byte"
 			       " %lu: %d != %d\n", i, data[i], xor2);
 			return 1;
 		}
 	}
-#if 0
-	__bio_kunmap_atomic(data, KM_USER0);
-#endif
 	kunmap(vs1[1].bv_page);
 
 	printk(KERN_INFO "*** sixth!\n");

@@ -11,9 +11,9 @@
 typedef struct disk_info disk_info_t;
 typedef struct encoding encoding_t;
 typedef struct raidxor_bio raidxor_bio_t;
-typedef struct raidxor_private_data_s raidxor_conf_t;
+typedef struct raidxor_conf raidxor_conf_t;
 typedef struct stripe stripe_t;
-typedef struct raidxor_resource raidxor_resource_t;
+typedef struct resource raidxor_resource_t;
 typedef struct cache cache_t;
 typedef struct cache_line cache_line_t;
 
@@ -156,7 +156,7 @@ struct disk_info {
 	int redundant;
 	encoding_t *encoding;
 
-	raidxor_resource_t *resource;
+	resource_t *resource;
 	stripe_t *stripe;
 };
 
@@ -186,7 +186,7 @@ struct encoding {
  *
  * In the rectangular raid layout, this is a row of units.
  */
-struct raidxor_resource {
+struct resource {
 	unsigned int n_units;
 	disk_info_t *units[0];
 };
@@ -232,7 +232,7 @@ struct stripe {
  * This way the user will have to first run the raid, then supply additional
  * information using the sysfs and can then begin to do something with it.
  **/
-struct raidxor_private_data_s {
+struct raidxor_conf {
 	mddev_t *mddev;
  	spinlock_t device_lock;
 
@@ -249,7 +249,7 @@ struct raidxor_private_data_s {
 
 	unsigned long units_per_resource;
 	unsigned long n_resources;
-	raidxor_resource_t **resources;
+	resource_t **resources;
 
 	unsigned long n_stripes;
 	stripe_t **stripes;
