@@ -46,35 +46,35 @@ struct cache {
 	cache_line_t lines[0];
 };
 
-#define CACHE_LINE_CLEAN 0
-#define CACHE_LINE_READY 1
-#define CACHE_LINE_LOADING 2
-#define CACHE_LINE_UPTODATE 3
-#define CACHE_LINE_DIRTY 4
+#define CACHE_LINE_CLEAN     0
+#define CACHE_LINE_READY     1
+#define CACHE_LINE_LOADING   2
+#define CACHE_LINE_UPTODATE  3
+#define CACHE_LINE_DIRTY     4
 #define CACHE_LINE_WRITEBACK 5
+#define CACHE_LINE_ERROR     6
 
 static cache_t * allocate_cache(unsigned int n_lines, unsigned int n_buffers);
 
 /*
    Life cycle of a cache line:
 
-   CLEAN: no pages are allocated
-
    +=======+ 1 	+-------+ 2  +---------+
-   ¦ CLEAN ¦<==>| READY |--->| LOADING |
+   ¦ CLEAN ¦<==>| READY |<==>| LOADING |
    +=======+  	+-------+    +---------+
 		  ^ 	   	---
 		  | 	-------/
-		 4|    /   3
-                  |   v
-                +----------+
-                | UPTODATE |<-\ 7
-                +----------+   ----\
+		 4|    /   3	      +-------+
+                  |   v		      | ERROR |
+                +----------+	      +-------+
+                | UPTODATE |<-\ 7	  ^ 
+                +----------+   ----\	 8|
          	 5 |	   	    \+----------+
 		   v	 	  /->| WRITEBACK|
 		+----------+  /---   +----------+
 		|  DIRTY   |--  6
 		+----------+
+
    1: allocating pages or dropping them
    2: loading data from disk
    3: finishing read from disk
@@ -82,6 +82,7 @@ static cache_t * allocate_cache(unsigned int n_lines, unsigned int n_buffers);
    5: write some data to the cache
    6: start writeback process
    7: finishing writeback, data in cache and on device is now synchronised
+   8: we couldn't finish writeback, just leave the data here
 
    requests are limited to multiple of PAGE_SIZE bytes, so all we have to do,
    is to take these requests, scatter their data into the cache, and write
@@ -106,9 +107,18 @@ static cache_t * allocate_cache(unsigned int n_lines, unsigned int n_buffers);
 
    if recovery is successful, we end up in the correct state.  globally, we
    record, which device failed (which is considered broken forever).
+   if its unable to recover, we go back to ready and completely abort the
+   request
 
    recovery is handled inside the bio layer, the necessary generic_requests
    are started inline (outside of raidxord).
+
+   since an error during writeback is very bad, we just stop there, go to
+   the error state, which is not purged from the cache.
+
+   if the whole cache is full of error lines, we naturally bring the whole
+   raid to read-only mode and abort request to sectors other than already
+   in cache.
  */
 
 
