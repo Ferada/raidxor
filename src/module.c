@@ -199,6 +199,7 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 	/* allocate the cache with a default of 10 lines;
 	   could be a driver option, or allow for shrinking/growing ... */	
 	conf->cache = allocate_cache(10, stripes[0]->n_data_units);
+	conf->cache->conf = conf;
 
 	printk(KERN_INFO "setting device size\n");
 
@@ -440,14 +441,27 @@ static struct attribute_group raidxor_attrs_group = {
 	.attrs = raidxor_attrs,
 };
 
-static void cache_drop_line(cache_t *cache, unsigned int n)
+static void cache_drop_line(cache_t *cache, unsigned int line)
 {
 	unsigned int i;
 
-	if (!cache || n >= cache->n_lines) return;
-
 	for (i = 0; i < cache->n_buffers; ++i)
-		safe_put_page(cache->lines[n].buffers[i]);
+		safe_put_page(cache->lines[line].buffers[i]);
+}
+
+static int cache_make_clean(cache_t *cache, unsigned int line)
+{
+	if (!cache || line >= cache->n_lines) goto out;
+	if (cache->lines[line].flags == CACHE_LINE_CLEAN) goto out_success;
+	if (cache->lines[line].flags != CACHE_LINE_READY) goto out;
+
+	cache->lines[line].flags = CACHE_LINE_CLEAN;
+	cache_drop_line(cache, line);
+
+out_success:
+	return 0;
+out:
+	return 1;
 }
 
 static void free_cache(cache_t *cache)
@@ -476,29 +490,41 @@ static cache_t * allocate_cache(unsigned int n_lines, unsigned int n_buffers)
 			(sizeof(cache_line_t) +
 			 sizeof(struct page *) * n_buffers) * n_lines,
 			GFP_NOIO);
-	if (!cache)
-		goto out;
+	if (!cache) goto out;
 
 	cache->n_lines = n_lines;
 	cache->n_buffers = n_buffers;
 
 	for (i = 0; i < n_lines; ++i)
 		for (j = 0; j < n_buffers; ++j)
-			atomic_set(&cache->lines[i].flags, CACHE_LINE_CLEAN);
+			cache->lines[i].flags = CACHE_LINE_CLEAN;
 
+	return cache;
 out:
 	return NULL;
 }
 
-#if 0
-//cache->lines[i].buffers[j] = alloc_page(GFP_NOIO);
-if (!cache->lines[i].buffers[j])
-	goto out_free_lines;
-#endif
+static int cache_make_ready(cache_t *cache, unsigned int line)
+{
+	unsigned int i;
 
+	if (!cache || line >= cache->n_lines) goto out;
+	if (cache->lines[line].flags == CACHE_LINE_READY) goto out_success;
+	if (cache->lines[line].flags != CACHE_LINE_CLEAN) goto out;
 
+	cache->lines[line].flags = CACHE_LINE_READY;
 
+	for (i = 0; i < cache->n_buffers; ++i)
+		if (!(cache->lines[line].buffers[i] = alloc_page(GFP_NOIO)))
+			goto out_free_pages;
 
+out_success:
+	return 0;
+out_free_pages:
+	cache_make_clean(cache, line);
+out:
+	return 1;
+}
 
 
 

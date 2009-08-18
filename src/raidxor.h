@@ -26,7 +26,7 @@ typedef struct cache_line cache_line_t;
  * @buffers: actual data
  */
 struct cache_line {
-	atomic_t flags;
+	unsigned int flags;
 	sector_t sector;
 
 	struct page *buffers[0];
@@ -40,15 +40,18 @@ struct cache_line {
  * device_lock needs to be hold when accessing the cache.
  */
 struct cache {
+	raidxor_conf_t *conf;
 	unsigned int n_lines, n_buffers;
 
 	cache_line_t lines[0];
 };
 
 #define CACHE_LINE_CLEAN 0
-#define CACHE_LINE_UPTODATE 1
-#define CACHE_LINE_DIRTY 2
-#define CACHE_LINE_WRITEBACK 3
+#define CACHE_LINE_READY 1
+#define CACHE_LINE_LOADING 2
+#define CACHE_LINE_UPTODATE 3
+#define CACHE_LINE_DIRTY 4
+#define CACHE_LINE_WRITEBACK 5
 
 static cache_t * allocate_cache(unsigned int n_lines, unsigned int n_buffers);
 
