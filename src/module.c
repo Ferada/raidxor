@@ -497,18 +497,6 @@ out_free_pages:
 out:
 	return 1;
 }
-
-
-
-
-
-
-
-
-
-
-
-
 
 /**
  * raidxor_free_bio() - puts all pages in a bio and the bio itself
@@ -880,61 +868,23 @@ static void raidxor_xor_single(struct bio *bioto, struct bio *biofrom)
 	struct bio_vec *bvto, *bvfrom;
 	unsigned char *tomapped, *frommapped;
 	unsigned char *toptr, *fromptr;
-#if 0
-	bio_for_each_segment(bv, bio, i) {
-		char *data = bvec_kmap_irq(bv, &flags);
-		memset(data, 0, bv->bv_len);
-		flush_dcache_page(bv->bv_page);
-		bvec_kunmap_irq(data, &flags);
-	}
-#endif
+
 	for (i = 0; i < bioto->bi_vcnt; ++i) {
 		bvto = bio_iovec_idx(bioto, i);
 		bvfrom = bio_iovec_idx(biofrom, i);
 
-		printk(KERN_INFO "hello\n");
-#if 0
-		tomapped = (unsigned char *) __bio_kmap_atomic(bioto, i, KM_USER0);
-		frommapped = (unsigned char *) __bio_kmap_atomic(biofrom, i, KM_USER0);
-#endif
-#if 0
-		tomapped = (unsigned char *) bvec_kmap_irq(bvto, &flagsto);
-		frommapped = (unsigned char *) bvec_kmap_irq(bvfrom, &flagsfrom);
-#endif
 		tomapped = (unsigned char *) kmap(bvto->bv_page);
 		frommapped = (unsigned char *) kmap(bvfrom->bv_page);
-
-		printk(KERN_INFO "world\n");
 
 		toptr = tomapped + bvto->bv_offset;
 		fromptr = frommapped + bvfrom->bv_offset;
 
-		printk(KERN_INFO "you, %d\n", bvto->bv_len);
-#if 1
 		for (j = 0; j < bvto->bv_len; ++j, ++toptr, ++fromptr) {
-#if 0
-			printk(KERN_INFO "j = %d, %p ^= %p\n", j, toptr, fromptr);
-			printk(KERN_INFO "%u ^ %u = %u\n", *toptr, *fromptr,
-			       *toptr ^ *fromptr);
-#endif
-#if 1
 			*toptr ^= *fromptr;
-#endif
 		}
-#endif
-#if 0
-		__bio_kunmap_atomic(biofrom, KM_USER0);
-		__bio_kunmap_atomic(bioto, KM_USER0);
-#endif
-#if 0
-		bvec_kunmap_irq(frommapped, &flagsfrom);
-		bvec_kunmap_irq(tomapped, &flagsto);
-#endif
 
 		kunmap(bvfrom->bv_page);
 		kunmap(bvto->bv_page);
-
-		printk(KERN_INFO "make\n");
 	}
 }
 
@@ -1089,14 +1039,16 @@ static int raidxor_test_case_sizeandlayout(void)
 	bio2.bi_size = bio1.bi_size = 42 + 1024;
 
 	if ((result = raidxor_check_same_size_and_layout(&bio1, &bio2))) {
-		printk(KERN_INFO "raidxor: test case sizeandlayout/1 failed: %d\n", result);
+		printk(KERN_INFO "raidxor: test case sizeandlayout/1 failed: %d\n",
+		       result);
 		return 1;
 	}
 
 	vs1[1].bv_len = 32;
 
 	if (!(result = raidxor_check_same_size_and_layout(&bio1, &bio2))) {
-		printk(KERN_INFO "raidxor: test case sizeandlayout/2 failed: %d\n", result);
+		printk(KERN_INFO "raidxor: test case sizeandlayout/2 failed: %d\n",
+		       result);
 		return 1;
 	}
 
@@ -1104,7 +1056,8 @@ static int raidxor_test_case_sizeandlayout(void)
 	bio2.bi_size = 1024;
 
 	if (!(result = raidxor_check_same_size_and_layout(&bio1, &bio2))) {
-		printk(KERN_INFO "raidxor: test case sizeandlayout/3 failed: %d\n", result);
+		printk(KERN_INFO "raidxor: test case sizeandlayout/3 failed: %d\n",
+		       result);
 		return 1;
 	}
 
@@ -1561,7 +1514,8 @@ static int raidxor_prepare_read_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
 		rbio->bi_size = length;
 		rbio->bi_vcnt = npages;
 
-		printk(KERN_INFO "raidxor: sector %llu, chunk_size >> 9 = %lu, data_offset %llu\n",
+		printk(KERN_INFO "raidxor: sector %llu, chunk_size >> 9 = %lu,"
+		       " data_offset %llu\n",
 		       (unsigned long long) rxbio->sector,
 		       chunk_size >> 9,
 		       (unsigned long long) stripe->units[i + k]->rdev->data_offset);
@@ -1817,7 +1771,8 @@ static stripe_t * raidxor_sector_to_stripe(raidxor_conf_t *conf, sector_t sector
 	       sectors_per_chunk);
 
 	for (i = 0; i < conf->n_stripes; ++i) {
-		printk(KERN_EMERG "raidxor: stripe %lu, sector %lu\n", i, (unsigned long) sector);
+		printk(KERN_EMERG "raidxor: stripe %lu, sector %lu\n",
+		       i, (unsigned long) sector);
 		if (sector <= stripes[i]->size >> 9)
 			break;
 		sector -= stripes[i]->size >> 9;

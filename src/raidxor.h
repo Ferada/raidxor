@@ -29,6 +29,8 @@ struct cache_line {
 	unsigned int flags;
 	sector_t sector;
 
+  
+
 	struct page *buffers[0];
 };
 
@@ -119,6 +121,17 @@ static cache_t * allocate_cache(unsigned int n_lines, unsigned int n_buffers);
    if the whole cache is full of error lines, we naturally bring the whole
    raid to read-only mode and abort request to sectors other than already
    in cache.
+
+   void raid_abort_readonly();
+     - sets abort flag
+     - waits until all operations are done?
+   void cache_line_recover(line);
+     - looks for equations
+     - checks if recovery is even possible
+     - loads blocks from the redundant devices
+     - merges them
+     - commits changes to the cache
+     - completes request? (callback?)
  */
 
 
