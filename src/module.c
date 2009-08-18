@@ -1609,8 +1609,8 @@ static void raidxord(mddev_t *mddev)
 	printk(KERN_INFO "raidxor: raidxord active\n");
 
 	spin_lock(&conf->device_lock);
-	for (; !list_empty(&conf->handle_list);) {
-		rxbio = list_entry(conf->handle_list.next, typeof(*rxbio), lru);
+	for (; !list_empty(&conf->request_list);) {
+		rxbio = list_entry(conf->request_list.next, typeof(*rxbio), lru);
 		list_del_init(&rxbio->lru);
 
 		if (bio_data_dir(rxbio->master_bio) == READ) {
@@ -1706,6 +1706,7 @@ static int raidxor_run(mddev_t *mddev)
 	mddev->queue->queue_lock = &conf->device_lock;
 
 	INIT_LIST_HEAD(&conf->handle_list);
+	INIT_LIST_HEAD(&conf->request_list);
 
 	size = -1; /* in sectors, that is 1024 byte */
 
@@ -1915,7 +1916,7 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 	rxbio->sector = newsector;
 	atomic_set(&rxbio->status, RAIDXOR_BIO_STATUS_NORMAL);
 
-	list_add_tail(&rxbio->lru, &conf->handle_list);
+	list_add_tail(&rxbio->lru, &conf->request_list);
 	md_wakeup_thread(conf->mddev->thread);
 	});
 

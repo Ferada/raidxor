@@ -61,7 +61,7 @@ static cache_t * allocate_cache(unsigned int n_lines, unsigned int n_buffers);
    CLEAN: no pages are allocated
 
    +=======+ 1 	+-------+ 2  +---------+
-   ¦ CLEAN ¦<==>| READY |<==>| LOADING |
+   ¦ CLEAN ¦<==>| READY |--->| LOADING |
    +=======+  	+-------+    +---------+
 		  ^ 	   	---
 		  | 	-------/
@@ -71,9 +71,9 @@ static cache_t * allocate_cache(unsigned int n_lines, unsigned int n_buffers);
                 | UPTODATE |<-\ 7
                 +----------+   ----\
          	 5 |	   	    \+----------+
-		   v	 	  /=>| WRITEBACK|
-		+----------+  /===   +----------+
-		|  DIRTY   |<=  6
+		   v	 	  /->| WRITEBACK|
+		+----------+  /---   +----------+
+		|  DIRTY   |--  6
 		+----------+
    1: allocating pages or dropping them
    2: loading data from disk
@@ -83,12 +83,32 @@ static cache_t * allocate_cache(unsigned int n_lines, unsigned int n_buffers);
    6: start writeback process
    7: finishing writeback, data in cache and on device is now synchronised
 
-   if the writeback/loading fails, operation 6 is reversed, that is,
-   writeback/loading is not successful, so we get back to dirty/ready
-
    requests are limited to multiple of PAGE_SIZE bytes, so all we have to do,
    is to take these requests, scatter their data into the cache, and write
    that back to disk (or load from there)
+
+   with blk_queue_max_sectors the maximum number of bytes is set to one
+   cache line, we just have to care for smaller requests
+
+   if the cache is full, some entries have to go.
+
+   currently loading or backwriting entries can not be touched.
+   we prefer ready ones first, then clean, then uptodate, then dirty.
+   dirty needs a writeback, so we have to start that and see later, if
+   we can do something.  how do we support waiting?
+   raid5.c uses wait_event_lock_irq for something like that.
+   we could also abort the request in the meantime ...
+
+   if we encounter an error, we stay in the state and start the recovery
+   routine, which waits for decoding equations and rebuilds the missing
+   data in the already read buffers.  the error callee needs to provide
+   the broken device, so that we can start the correct recovery equation.
+
+   if recovery is successful, we end up in the correct state.  globally, we
+   record, which device failed (which is considered broken forever).
+
+   recovery is handled inside the bio layer, the necessary generic_requests
+   are started inline (outside of raidxord).
  */
 
 
@@ -197,6 +217,7 @@ struct raidxor_private_data_s {
 
 	unsigned long chunk_size;
 
+	struct list_head request_list;
 	struct list_head handle_list;
 
 	cache_t *cache;
