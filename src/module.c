@@ -87,7 +87,7 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 	mddev_t *mddev = conf->mddev;
 	sector_t size = 0;
 
-	if (!conf) {
+	if (!conf || !mddev) {
 		printk(KERN_DEBUG "raidxor: NULL pointer in "
 		       "raidxor_free_conf\n");
 		return;
@@ -197,52 +197,24 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 	}
 
 	/* allocate the cache with a default of 10 lines;
-	   could be a driver option, or allow for shrinking/growing ... */	
+	   TODO: could be a driver option, or allow for shrinking/growing ... */	
 	conf->cache = allocate_cache(10, stripes[0]->n_data_units);
+	if (!conf->cache)
+		goto out_free_stripes;
 	conf->cache->conf = conf;
 
+	printk(KERN_EMERG "and max sectors to %lu\n",
+	       PAGE_SIZE * stripes[0]->n_data_units / 512);
+	blk_queue_max_sectors(mddev->queue,
+			      PAGE_SIZE * stripes[0]->n_data_units / 512);
+
 	printk(KERN_INFO "setting device size\n");
-
-	if (!mddev)
-		goto out_free_stripes;
-
-	printk(KERN_INFO "normally i'd like to set hardsect_size to %lu * %lu = %lu\n",
-	       old_data_units, conf->chunk_size, old_data_units * conf->chunk_size);
-	printk(KERN_INFO "and also to set the size to %llu sectors ...\n", size);
 
 	/* FIXME: device size must a multiple of chunk size */
 	/* FIXME: in what unit shold this be encoded? */
 	/* FIXME: this is also breaks, somehow */
 	mddev->array_sectors = size;
 	set_capacity(mddev->gendisk, mddev->array_sectors);
-
-	/* we only accept requests multiple of the number of data units
-	   times chunk size so we don't have to read something back manually
-	   for partial write operations;
-	   every request should now be M * N_DATA_UNITS * CHUNK_SIZE long */
-	/* FIXME: this crashes with
-Pid: 2701, comm: vol_id Tainted: G          (2.6.27.7-9-xen #1)
-EIP: 0061:[<c01a48fb>] EFLAGS: 00010287 CPU: 0
-EIP is at create_empty_buffers+0x13/0x9a
-
-Call Trace:
- [<c01a722e>] block_read_full_page+0x46/0x2d8
- [<c01662f0>] __do_page_cache_readahead+0x15b/0x181
- [<c0166631>] page_cache_sync_readahead+0x2a/0x31
- [<c015ff67>] do_generic_file_read+0xd7/0x408
- [<c0160efd>] generic_file_aio_read+0x14a/0x17c
- [<c0185018>] do_sync_read+0xc9/0x10c
- [<c0185a13>] vfs_read+0x88/0x134
- [<c0185b61>] sys_read+0x41/0x67
- [<c0104e22>] syscall_call+0x7/0xb
- [<f57fe416>] 0xf57fe416
- =======================
- 	*/
-#if 0
-	printk(KERN_EMERG "raidxor: queue_hardsect_size(mddev->queue, %lu * %lu) called\n",
-	       old_data_units, conf->chunk_size);
-	blk_queue_hardsect_size(mddev->queue, old_data_units * conf->chunk_size);
-#endif
 
 	printk (KERN_INFO "raidxor: array_sectors is %llu blocks\n",
 		(unsigned long long) mddev->array_sectors * 2);

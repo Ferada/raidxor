@@ -85,6 +85,10 @@ static cache_t * allocate_cache(unsigned int n_lines, unsigned int n_buffers);
 
    if the writeback/loading fails, operation 6 is reversed, that is,
    writeback/loading is not successful, so we get back to dirty/ready
+
+   requests are limited to multiple of PAGE_SIZE bytes, so all we have to do,
+   is to take these requests, scatter their data into the cache, and write
+   that back to disk (or load from there)
  */
 
 
