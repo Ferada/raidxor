@@ -162,9 +162,6 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 		printk(KERN_INFO "direct: stripes[%lu] %p\n", i, stripes[i]);
 		stripes[i]->n_units = conf->n_units / conf->n_stripes;
 		printk(KERN_INFO "using %d units per stripe\n", stripes[i]->n_units);
-
-		stripes[i]->size = stripes[i]->n_data_units * mddev->size;
-
 		printk(KERN_INFO "going through %d units\n", stripes[i]->n_units);
 
 		for (j = 0; j < stripes[i]->n_units; ++j) {
@@ -192,6 +189,8 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 			       i, stripes[i]->n_data_units, old_data_units);
 			goto out_free_stripes;
 		}
+
+		stripes[i]->size = stripes[i]->n_data_units * mddev->size;
 	}
 
 	/* allocate the cache with a default of 10 lines;
@@ -213,9 +212,10 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 	set_capacity(mddev->gendisk, mddev->array_sectors);
 
 	printk (KERN_INFO "raidxor: array_sectors is %llu * %u = "
-		"%llu blocks\n",
+		"%llu sectors, %llu blocks\n",
 		(unsigned long long) stripes[0]->size,
 		(unsigned int) conf->n_stripes,
+		(unsigned long long) mddev->array_sectors,
 		(unsigned long long) mddev->array_sectors * 2);
 
 	conf->resources = resources;
