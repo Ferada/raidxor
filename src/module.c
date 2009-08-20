@@ -212,7 +212,10 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 	mddev->array_sectors = stripes[0]->size * conf->n_stripes;
 	set_capacity(mddev->gendisk, mddev->array_sectors);
 
-	printk (KERN_INFO "raidxor: array_sectors is %llu blocks\n",
+	printk (KERN_INFO "raidxor: array_sectors is %llu * %u = "
+		"%llu blocks\n",
+		(unsigned long long) stripes[0]->size,
+		(unsigned int) conf->n_stripes,
 		(unsigned long long) mddev->array_sectors * 2);
 
 	conf->resources = resources;
