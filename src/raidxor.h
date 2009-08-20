@@ -13,7 +13,7 @@ typedef struct encoding encoding_t;
 typedef struct raidxor_bio raidxor_bio_t;
 typedef struct raidxor_conf raidxor_conf_t;
 typedef struct stripe stripe_t;
-typedef struct resource raidxor_resource_t;
+typedef struct raidxor_resource resource_t;
 typedef struct cache cache_t;
 typedef struct cache_line cache_line_t;
 
@@ -186,7 +186,7 @@ struct encoding {
  *
  * In the rectangular raid layout, this is a row of units.
  */
-struct resource {
+struct raidxor_resource {
 	unsigned int n_units;
 	disk_info_t *units[0];
 };
@@ -195,7 +195,7 @@ struct resource {
 
 /**
  * struct stripe - one stripe over multiple resources and units
- * @size: size in bytes but multiple of block size (512)
+ * @size: size in sectors, that is, 1024 bytes
  * @n_units: the number of contained units
  * @units: the actual units
  *
@@ -219,7 +219,7 @@ struct stripe {
  * @mddev: the mddev we are associated to
  * @device_lock: lock for exclusive access to this raid
  * @status: one of RAIDXOR_CONF_STATUS_{NORMAL,INCOMPLETE,ERROR}
- * @chunk_size: copied from mddev_t
+ * @chunk_size: copied from mddev_t, in bytes
  * @handle_list: requests needing handling
  * @configured: is 1 if we have all necessary information
  * @units_per_resource: the number of units per resource

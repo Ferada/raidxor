@@ -84,8 +84,8 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 	disk_info_t *unit;
 	unsigned long i, j, old_data_units = 0;
 	char buffer[32];
+	sector_t size;
 	mddev_t *mddev = conf->mddev;
-	sector_t size = 0;
 
 	if (!conf || !mddev) {
 		printk(KERN_DEBUG "raidxor: NULL pointer in "
@@ -163,7 +163,7 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 		stripes[i]->n_units = conf->n_units / conf->n_stripes;
 		printk(KERN_INFO "using %d units per stripe\n", stripes[i]->n_units);
 
-		stripes[i]->size = 0;
+		stripes[i]->size = stripes[i]->n_data_units * mddev->size;
 
 		printk(KERN_INFO "going through %d units\n", stripes[i]->n_units);
 
@@ -181,8 +181,6 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 			}
 			stripes[i]->units[j] = unit;
 		}
-
-		size += stripes[i]->size / 2;
 
 		if (old_data_units == 0) {
 			old_data_units = stripes[i]->n_data_units;
@@ -210,10 +208,8 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 
 	printk(KERN_INFO "setting device size\n");
 
-	/* FIXME: device size must a multiple of chunk size */
-	/* FIXME: in what unit shold this be encoded? */
-	/* FIXME: this is also breaks, somehow */
-	mddev->array_sectors = size;
+	/* since all stripes are equally long */
+	mddev->array_sectors = stripes[0]->size * conf->n_stripes;
 	set_capacity(mddev->gendisk, mddev->array_sectors);
 
 	printk (KERN_INFO "raidxor: array_sectors is %llu blocks\n",
@@ -1639,13 +1635,11 @@ static int raidxor_run(mddev_t *mddev)
 	INIT_LIST_HEAD(&conf->handle_list);
 	INIT_LIST_HEAD(&conf->request_list);
 
-	size = -1; /* in sectors, that is 1024 byte */
+	size = -1; /* rdev->size is in sectors, that is 1024 byte */
 
 	i = conf->n_units - 1;
 	rdev_for_each(rdev, tmp, mddev) {
 		size = min(size, rdev->size);
-
-		//index = rdev->raid_disk;
 
 		printk(KERN_INFO "raidxor: device %lu rdev %s, %llu blocks\n",
 		       i, bdevname(rdev->bdev, buffer),
@@ -1658,7 +1652,7 @@ static int raidxor_run(mddev_t *mddev)
 	if (size == -1)
 		goto out_free_conf;
 
-	/* used component size, multiple of chunk_size ... */
+	/* used component size in sectors, multiple of chunk_size ... */
 	mddev->size = size & ~(conf->chunk_size / 1024 - 1);
 	/* exported size, will be initialised later */
 	mddev->array_sectors = 0;
@@ -1820,7 +1814,7 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 	printk(KERN_EMERG "raidxor: got request\n");
 
 	printk(KERN_EMERG "raidxor: sector_to_stripe(conf, %llu, &newsector) called\n",
-	       bio->bi_sector);
+	       (unsigned long long) bio->bi_sector);
 
 	stripe = raidxor_sector_to_stripe(conf, bio->bi_sector, &newsector);
 
