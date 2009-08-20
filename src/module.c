@@ -1655,6 +1655,9 @@ static int raidxor_run(mddev_t *mddev)
 	if (size == -1)
 		goto out_free_conf;
 
+	printk(KERN_INFO "raidxor: used component size: %llu\n",
+	       size & ~(conf->chunk_size / 1024 - 1));
+
 	/* used component size in sectors, multiple of chunk_size ... */
 	mddev->size = size & ~(conf->chunk_size / 1024 - 1);
 	/* exported size, will be initialised later */
