@@ -239,6 +239,7 @@ struct raidxor_conf {
 	unsigned int status;
 
 	unsigned long chunk_size;
+	sector_t stripe_size;
 
 	struct list_head request_list;
 	struct list_head handle_list;

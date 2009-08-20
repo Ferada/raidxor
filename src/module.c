@@ -171,11 +171,8 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 
 			unit->stripe = stripes[i];
 
-			if (unit->redundant == 0) {
+			if (unit->redundant == 0)
 				++stripes[i]->n_data_units;
-				stripes[i]->size += (unit->rdev->size * 2) &
-					~(conf->chunk_size / 512 - 1);
-			}
 			stripes[i]->units[j] = unit;
 		}
 
@@ -218,6 +215,7 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 		(unsigned long long) mddev->array_sectors,
 		(unsigned long long) mddev->array_sectors * 2);
 
+	conf->stripe_size = stripes[0]->size;
 	conf->resources = resources;
 	conf->stripes = stripes;
 	conf->configured = 1;
@@ -1734,8 +1732,7 @@ static int raidxor_bio_maybe_split_boundary(stripe_t *stripe, struct bio *bio,
 
 /**
  * raidxor_sector_to_stripe() - returns the stripe a virtual sector belongs to
- *
- * @newsector - if non-NULL, the sector in the stripe is written here
+ * @newsector: if non-NULL, the sector in the stripe is written here
  */
 static stripe_t * raidxor_sector_to_stripe(raidxor_conf_t *conf, sector_t sector,
 					   sector_t *newsector)
