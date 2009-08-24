@@ -300,7 +300,8 @@ struct raidxor_conf {
  */
 struct raidxor_bio {
 	atomic_t remaining;
-	mddev_t *mddev;
+	cache_t *cache;
+	cache_line_t *line;
 
 	stripe_t *stripe;
 	sector_t sector;

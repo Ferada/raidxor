@@ -5,20 +5,6 @@
 
 #include "raidxor.h"
 
-static raidxor_bio_t * raidxor_alloc_bio(unsigned int nbios)
-{
-	raidxor_bio_t *result;
-
-	result = kzalloc(sizeof(raidxor_bio_t) +
-			 sizeof(struct bio *) * nbios,
-			 GFP_NOIO);
-
-	if (!result) return NULL;
-	result->n_bios = nbios;
-
-	return result;
-}
-
 #define RAIDXOR_RUN_TESTCASES 1
 
 #ifdef RAIDXOR_RUN_TESTCASES
@@ -407,9 +393,9 @@ static struct attribute_group raidxor_attrs_group = {
 };
 
 /**
- * raidxor_free_bio() - puts all pages in a bio and the bio itself
+ * free_bio() - puts all pages in a bio and the bio itself
  */
-static void raidxor_free_bio(struct bio *bio)
+static void free_bio(struct bio *bio)
 {
 	unsigned long i;
 	for (i = 0; i < bio->bi_vcnt; ++i)
@@ -418,13 +404,33 @@ static void raidxor_free_bio(struct bio *bio)
 }
 
 /**
- * raidxor_free_bios() - puts all bios (and their pages) in a raidxor_bio_t
+ * free_bios() - puts all bios (and their pages) in a raidxor_bio_t
  */
-static void raidxor_free_bios(raidxor_bio_t *rxbio)
+static void free_bios(raidxor_bio_t *rxbio)
 {
 	unsigned long i;
 	for (i = 0; i < rxbio->n_bios; ++i)
-		if (rxbio->bios[i]) raidxor_free_bio(rxbio->bios[i]);
+		if (rxbio->bios[i]) free_bio(rxbio->bios[i]);
+}
+
+static raidxor_bio_t * raidxor_alloc_bio(unsigned int nbios)
+{
+	raidxor_bio_t *result;
+
+	result = kzalloc(sizeof(raidxor_bio_t) +
+			 sizeof(struct bio *) * nbios,
+			 GFP_NOIO);
+
+	if (!result) return NULL;
+	result->n_bios = nbios;
+
+	return result;
+}
+
+static void raidxor_free_bio(raidxor_bio_t *rxbio)
+{
+	free_bios(rxbio);
+	kfree(rxbio);
 }
 
 static void raidxor_cache_drop_line(cache_t *cache, unsigned int line)
@@ -576,8 +582,12 @@ static void raidxor_cache_load_line(cache_t *cache, unsigned int n)
 			bio->bi_io_vec[k].bv_offset = 0;
 		}
 	}
-	/* generic_make_request */
+
+	atomic_inc(&cache->active_lines);
+	for (i = 0; i < rxbio->n_bios; ++i)
+		generic_make_request(rxbio->bios[i]);
 out_free_bio:
+	free_bios(rxbio);
 	kfree(rxbio);
 out:
 	/* bio_error the listed requests */
@@ -591,6 +601,11 @@ static void raidxor_end_load_line(struct bio *bio, int error)
 	/* set faulty bit on that device and inform the thread to take
 	   action */
 	//bio_io_error(rxbio->master_bio);
+	if (atomic_dec_and_test(&rxbio->remaining)) {
+		rxbio->line->flags = CACHE_LINE_UPTODATE;
+		atomic_dec(&rxbio->cache->active_lines);
+		kfree(rxbio);
+	}
 }
 
 static void raidxor_cache_writeback_line(cache_t *cache, unsigned int n)
@@ -845,7 +860,7 @@ static void raidxor_abort_request(raidxor_bio_t *rxbio, struct bio *bio,
 {
 	disk_info_t *unit = raidxor_find_unit(rxbio, bio);
 	/* mark faulty, regardless if we saw an error earlier */
-	md_error(rxbio->mddev, (unit) ? unit->rdev : NULL);
+	md_error(rxbio->cache->conf->mddev, (unit) ? unit->rdev : NULL);
 	
 	/* only record error if we didn't already have one; we don't care
 	   about the previous value */
@@ -1258,7 +1273,6 @@ static int raidxor_test_case_xor_combine(void)
 
 	raidxor_xor_combine(&bio3, rxbio, encoding);
 
-#if 1
 	data = __bio_kmap_atomic(&bio3, 0, KM_USER0);
 	for (i = 0; i < PAGE_SIZE; ++i) {
 		if (data[i] != xor1) {
@@ -1278,7 +1292,6 @@ static int raidxor_test_case_xor_combine(void)
 		}
 	}
 	__bio_kunmap_atomic(data, KM_USER0);
-#endif
 
 	safe_put_page(vs1[0].bv_page);
 	safe_put_page(vs1[1].bv_page);
