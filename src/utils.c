@@ -172,7 +172,7 @@ static cache_t * raidxor_alloc_cache(unsigned int n_lines, unsigned int n_buffer
 	cache->n_chunk_mult = n_chunk_mult;
 
 	for (i = 0; i < n_lines; ++i)
-		cache->lines[i].flags = CACHE_LINE_CLEAN;
+		cache->lines[i].status = CACHE_LINE_CLEAN;
 	return cache;
 }
 

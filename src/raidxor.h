@@ -27,7 +27,7 @@ typedef struct raidxor_request raidxor_request_t;
  * @buffers: actual data
  */
 struct cache_line {
-	unsigned long flags;
+	unsigned long status;
 	sector_t sector;
 
 	struct bio *waiting;
@@ -60,6 +60,7 @@ struct cache {
 #define CACHE_LINE_DIRTY     4
 #define CACHE_LINE_WRITEBACK 5
 #define CACHE_LINE_ERROR     6
+#define CACHE_LINE_FAULTY    7
 
 static cache_t * raidxor_alloc_cache(unsigned int n_lines, unsigned int n_buffers,
 				     unsigned int n_chunk_mult);
@@ -67,12 +68,16 @@ static cache_t * raidxor_alloc_cache(unsigned int n_lines, unsigned int n_buffer
 /*
    Life cycle of a cache line:
 
-   +=======+ 1 	+-------+ 2  +---------+
-   ¦ CLEAN ¦<==>| READY |<==>| LOADING |
-   +=======+  	+-------+    +---------+
-		  ^ 	   	---
-		  | 	-------/
-		 4|    /   3	      +-------+
+                      ------------------------
+                     /           11           \
+                    v                          v
+   +=======+ 1 	+-------+ 2  +---------+ 9 +--------+
+   ¦ CLEAN ¦<==>| READY |<==>| LOADING |-->| FAULTY |
+   +=======+  	+-------+    +---------+   +--------+
+		  ^ 	     3	---           ---
+		  | 	 ------/-------------/  10
+                  |     /
+		 4|    /    	      +-------+
                   |   v		      | ERROR |
                 +----------+	      +-------+
                 | UPTODATE |<-\ 7	  ^ 
@@ -91,6 +96,10 @@ static cache_t * raidxor_alloc_cache(unsigned int n_lines, unsigned int n_buffer
    6: start writeback process
    7: finishing writeback, data in cache and on device is now synchronised
    8: we couldn't finish writeback, just leave the data here
+   9: we couldn't read from one device, go here and start recovery
+  10: recovery finished, so we are done
+  11: recovery couldn't be finished, so drop all requests and drop back to
+      a more usable state
 
    requests are limited to multiple of PAGE_SIZE bytes, so all we have to do,
    is to take these requests, scatter their data into the cache, and write

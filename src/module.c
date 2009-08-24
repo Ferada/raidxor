@@ -16,10 +16,10 @@ static int raidxor_cache_make_clean(cache_t *cache, unsigned int line)
 	CHECK_ARG_RET_VAL(cache);
 	CHECK_PLAIN_RET_VAL(line < cache->n_lines);
 
-	if (cache->lines[line].flags == CACHE_LINE_CLEAN) return 0;
-	CHECK_PLAIN_RET_VAL(cache->lines[line].flags != CACHE_LINE_READY);
+	if (cache->lines[line].status == CACHE_LINE_CLEAN) return 0;
+	CHECK_PLAIN_RET_VAL(cache->lines[line].status != CACHE_LINE_READY);
 
-	cache->lines[line].flags = CACHE_LINE_CLEAN;
+	cache->lines[line].status = CACHE_LINE_CLEAN;
 	raidxor_cache_drop_line(cache, line);
 
 	return 0;
@@ -33,10 +33,10 @@ static int raidxor_cache_make_ready(cache_t *cache, unsigned int line)
 	CHECK_ARG_RET_VAL(cache);
 	CHECK_PLAIN_RET_VAL(line < cache->n_lines);
 
-	if (cache->lines[line].flags == CACHE_LINE_READY) return 0;
-	CHECK_PLAIN_RET_VAL(cache->lines[line].flags != CACHE_LINE_CLEAN);
+	if (cache->lines[line].status == CACHE_LINE_READY) return 0;
+	CHECK_PLAIN_RET_VAL(cache->lines[line].status != CACHE_LINE_CLEAN);
 
-	cache->lines[line].flags = CACHE_LINE_READY;
+	cache->lines[line].status = CACHE_LINE_READY;
 
 	for (i = 0; i < cache->n_buffers; ++i)
 		if (!(cache->lines[line].buffers[i] = alloc_page(GFP_NOIO)))
@@ -201,23 +201,40 @@ out: __attribute__((unused))
 
 static void raidxor_end_load_line(struct bio *bio, int error)
 {
+#undef CHECK_JUMP_LABEL
+#define CHECK_JUMP_LABEL error
+	disk_info_t *unit;
 	raidxor_bio_t *rxbio = (raidxor_bio_t *)(bio->bi_private);
+	raidxor_conf_t *conf = rxbio->cache->conf;
+
+	CHECK_ARG_RET(bio);
 
 	if (error) {
-		/* TODO: set faulty bit on that device */
+		WITHLOCKCONF(rxbio->cache->conf, {
+		rxbio->line->status = CACHE_LINE_FAULTY;
+		unit = raidxor_find_unit_bio(rxbio->stripe, bio);
+		});
+		CHECK_PLAIN(unit);
+
+		md_error(conf->mddev, unit->rdev);
+
+		
 	}
 	else {
 		/* TODO: copy data around */
 	}
 
+error: __attribute__((unused))
 	WITHLOCKCONF(rxbio->cache->conf, {
 	if ((--rxbio->remaining) == 0) {
-		if (rxbio->line->flags == CACHE_LINE_LOADING) {
-			rxbio->line->flags = CACHE_LINE_UPTODATE;
+		if (rxbio->line->status == CACHE_LINE_LOADING) {
+			rxbio->line->status = CACHE_LINE_UPTODATE;
+		}
+		else if (rxbio->line->status == CACHE_LINE_FAULTY) {
+			/* TODO: try starting recovery */
 		}
 		--rxbio->cache->active_lines;
 		/* TODO: wake up waiting threads */
-
 		kfree(rxbio);
 	}
 	});
@@ -225,23 +242,31 @@ static void raidxor_end_load_line(struct bio *bio, int error)
 
 static void raidxor_end_writeback_line(struct bio *bio, int error)
 {
+#undef CHECK_JUMP_LABEL
+#define CHECK_JUMP_LABEL error
+	disk_info_t *unit;
 	raidxor_bio_t *rxbio = (raidxor_bio_t *)(bio->bi_private);
+	raidxor_conf_t *conf = rxbio->cache->conf;
 
 	if (error) {
 		/* TODO: set faulty bit on that device */
 		WITHLOCKCONF(rxbio->cache->conf, {
-			rxbio->line->flags = CACHE_LINE_DIRTY;
+		rxbio->line->status = CACHE_LINE_ERROR;
+		unit = raidxor_find_unit_bio(rxbio->stripe, bio);
 		});
+		CHECK_PLAIN(unit);
+
+		md_error(conf->mddev, unit->rdev);
 	}
 	else {
 		/* TODO: copy data around */
 	}
 
+error: __attribute__((unused))
 	WITHLOCKCONF(rxbio->cache->conf, {
 	if ((--rxbio->remaining) == 0) {
-		if (rxbio->line->flags == CACHE_LINE_WRITEBACK) {
-			rxbio->line->flags = CACHE_LINE_UPTODATE;
-		}
+		if (rxbio->line->status == CACHE_LINE_WRITEBACK)
+			rxbio->line->status = CACHE_LINE_UPTODATE;
 		--rxbio->cache->active_lines;
 		/* TODO: wake up waiting threads */
 
