@@ -47,7 +47,7 @@ struct cache_line {
  */
 struct cache {
 	raidxor_conf_t *conf;
-	atomic_t active_lines;
+	unsigned int active_lines;
 	unsigned int n_lines, n_buffers, n_chunk_mult;
 
 	cache_line_t lines[0];
@@ -183,6 +183,8 @@ struct encoding {
 	disk_info_t *units[0];
 };
 
+static int raidxor_xor_combine(struct bio *bioto, raidxor_bio_t *rxbio,
+			       encoding_t *encoding);
 
 
 /**
@@ -299,7 +301,7 @@ struct raidxor_conf {
  * If remaining reaches zero, the whole transfer is finished.
  */
 struct raidxor_bio {
-	atomic_t remaining;
+	unsigned int remaining;
 	cache_t *cache;
 	cache_line_t *line;
 

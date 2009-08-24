@@ -530,7 +530,6 @@ static void raidxor_end_writeback_line(struct bio *bio, int error);
 static void raidxor_cache_load_line(cache_t *cache, unsigned int n)
 {
 	cache_line_t *line;
-	disk_info_t *unit;
 	stripe_t *stripe;
 	sector_t actual_sector;
 	raidxor_bio_t *rxbio;
@@ -584,12 +583,13 @@ static void raidxor_cache_load_line(cache_t *cache, unsigned int n)
 		}
 	}
 
-	atomic_inc(&cache->active_lines);
+	rxbio->remaining = stripe->n_data_units;
+	++cache->active_lines;
 	for (i = 0; i < rxbio->n_bios; ++i)
-		generic_make_request(rxbio->bios[i]);
+		if (rxbio->bios[i])
+			generic_make_request(rxbio->bios[i]);
 out_free_bio:
-	free_bios(rxbio);
-	kfree(rxbio);
+	raidxor_free_bio(rxbio);
 out:
 	/* bio_error the listed requests */
 	return;
@@ -598,10 +598,11 @@ out:
 static void raidxor_cache_writeback_line(cache_t *cache, unsigned int n)
 {
 	cache_line_t *line;
-	disk_info_t *unit;
 	stripe_t *stripe;
 	sector_t actual_sector;
 	raidxor_bio_t *rxbio;
+	unsigned int i, j, k, n_chunk_mult;
+	struct bio *bio;
 	raidxor_conf_t *conf = cache->conf;
 
 	CHECK(cache, out, "no cache");
@@ -617,9 +618,50 @@ static void raidxor_cache_writeback_line(cache_t *cache, unsigned int n)
 	rxbio = raidxor_alloc_bio(stripe->n_units);
 	CHECK(rxbio, out, "couldn't allocate raidxor_bio_t");
 
-	/* rxbio */
-	/* for (i = 0; i < nbios; ++i) */
-	/* generic_make_request */
+	n_chunk_mult = cache->n_chunk_mult;
+
+	for (i = 0; i < rxbio->n_bios; ++i) {
+		/* only one chunk */
+		rxbio->bios[i] = bio = bio_alloc(GFP_NOIO, cache->n_chunk_mult);
+		CHECK(rxbio->bios[i], out_free_bio,
+		      "couldn't allocate bio");
+
+		if (test_bit(Faulty, &stripe->units[i]->rdev->flags)) {
+			printk(KERN_INFO "raidxor: got a faulty drive"
+			       " during a request, skipping for now");
+			goto out_free_bio;
+		}
+
+		bio->bi_rw = WRITE;
+		bio->bi_private = rxbio;
+		bio->bi_bdev = stripe->units[i]->rdev->bdev;
+		bio->bi_end_io = raidxor_end_writeback_line;
+		bio->bi_sector = 42;
+		bio->bi_size = n_chunk_mult * PAGE_SIZE;
+
+		/* assign page */
+		bio->bi_vcnt = n_chunk_mult;
+		for (j = 0; j < n_chunk_mult; ++j) {
+			k = i * n_chunk_mult + j;
+			bio->bi_io_vec[k].bv_page = line->buffers[k];
+			bio->bi_io_vec[k].bv_len = PAGE_SIZE;
+			bio->bi_io_vec[k].bv_offset = 0;
+		}		
+	}
+
+	for (i = 0; i < rxbio->n_bios; ++i)
+		if (stripe->units[i]->redundant) {
+			if (raidxor_xor_combine(rxbio->bios[i], rxbio, stripe->units[i]->encoding))
+				goto out_free_bio;
+		}
+
+	rxbio->remaining = rxbio->n_bios;
+	++cache->active_lines;
+	for (i = 0; i < rxbio->n_bios; ++i)
+		if (rxbio->bios[i])
+			generic_make_request(rxbio->bios[i]);
+out_free_bio:
+	raidxor_free_bio(rxbio);
 out:
 	return;
 }
@@ -635,17 +677,17 @@ static void raidxor_end_load_line(struct bio *bio, int error)
 		/* TODO: copy data around */
 	}
 
-	if (atomic_dec_and_test(&rxbio->remaining)) {
-		WITHLOCKCONF(rxbio->cache->conf, {
-		if (rxbio->line == CACHE_LINE_LOADING) {
+	WITHLOCKCONF(rxbio->cache->conf, {
+	if ((--rxbio->remaining) == 0) {
+		if (rxbio->line->flags == CACHE_LINE_LOADING) {
 			rxbio->line->flags = CACHE_LINE_UPTODATE;
 		}
-		atomic_dec(&rxbio->cache->active_lines);
-		});
+		--rxbio->cache->active_lines;
 		/* TODO: wake up waiting threads */
 
 		kfree(rxbio);
 	}
+	});
 }
 
 static void raidxor_end_writeback_line(struct bio *bio, int error)
@@ -662,17 +704,17 @@ static void raidxor_end_writeback_line(struct bio *bio, int error)
 		/* TODO: copy data around */
 	}
 
-	if (atomic_dec_and_test(&rxbio->remaining)) {
-		WITHLOCKCONF(rxbio->cache->conf, {
+	WITHLOCKCONF(rxbio->cache->conf, {
+	if ((--rxbio->remaining) == 0) {
 		if (rxbio->line->flags == CACHE_LINE_WRITEBACK) {
 			rxbio->line->flags = CACHE_LINE_UPTODATE;
 		}
-		atomic_dec(&rxbio->cache->active_lines);
-		});
+		--rxbio->cache->active_lines;
 		/* TODO: wake up waiting threads */
 
 		kfree(rxbio);
 	}
+	});
 }
 
 /*
@@ -851,7 +893,7 @@ static struct bio * raidxor_find_bio(raidxor_bio_t *rxbio, disk_info_t *unit)
 }
 
 /**
- * raidxor_find_rdev() - searches for the corresponding unit for a single bio
+ * raidxor_find_unit() - searches for the corresponding unit for a single bio
  *
  * Returns NULL if not found.
  */
@@ -891,21 +933,6 @@ static unsigned long raidxor_compute_length(raidxor_conf_t *conf,
 		result += min(conf->chunk_size, over - index * conf->chunk_size);
 
 	return result;
-}
-
-static void raidxor_abort_request(raidxor_bio_t *rxbio, struct bio *bio,
-				  int error)
-{
-	disk_info_t *unit = raidxor_find_unit(rxbio, bio);
-	/* mark faulty, regardless if we saw an error earlier */
-	md_error(rxbio->cache->conf->mddev, (unit) ? unit->rdev : NULL);
-	
-	/* only record error if we didn't already have one; we don't care
-	   about the previous value */
-#if 0
-	(void) atomic_cmpxchg(&rxbio->status, RAIDXOR_BIO_STATUS_NORMAL,
-			      error);
-#endif
 }
 
 static void raidxor_copy_bio(struct bio *bioto, struct bio *biofrom)
@@ -1184,6 +1211,10 @@ static int raidxor_xor_combine(struct bio *bioto, raidxor_bio_t *rxbio,
 	unsigned long i;
 	struct bio *biofrom;
 
+	CHECK(bioto, out, "bioto missing");
+	CHECK(rxbio, out, "bioto missing");
+	CHECK(encoding, out, "bioto missing");
+
 	/* copying first bio buffers */
 	biofrom = raidxor_find_bio(rxbio, encoding->units[0]);
 	raidxor_copy_bio(bioto, biofrom);
@@ -1198,24 +1229,24 @@ static int raidxor_xor_combine(struct bio *bioto, raidxor_bio_t *rxbio,
 		if (!biofrom) {
 			printk(KERN_DEBUG "raidxor: didn't find bio in"
 			       " raidxor_xor_combine\n");
-			return 1;
+			goto out;
 		}
 
 		if (raidxor_check_same_size_and_layout(bioto, biofrom)) {
 			printk(KERN_DEBUG "raidxor: bioto and biofrom"
 			       " differ in size and/or layout\n");
-			return 1;
+			goto out;
 		}
 
 		printk(KERN_INFO "combining %p and %p\n", bioto, biofrom);
 
 		/* combine the data */
 		raidxor_xor_single(bioto, biofrom);
-
-		return 1;
 	}
 
 	return 0;
+out:
+	return 1;
 }
 
 #ifdef RAIDXOR_RUN_TESTCASES
@@ -1380,22 +1411,20 @@ static void raidxor_compute_length_and_pages(stripe_t *stripe,
 static void raidxord(mddev_t *mddev)
 {
 	raidxor_conf_t *conf = mddev_to_conf(mddev);
-	raidxor_request_t *request;
-	struct bio *bio;
 	unsigned long handled = 0;
 
 	/* someone poked us.  see what we can do */
 	printk(KERN_INFO "raidxor: raidxord active\n");
 
-	spin_lock(&conf->device_lock);
+	WITHLOCKCONF(conf, {
 	for (; conf->status != RAIDXOR_CONF_STATUS_STOPPING;) {
 		/* go through all cache lines, see if anything can be done */
 		/* if the target device is faulty, start repair if possible,
 		   else signal an error on that request */
-		spin_unlock(&conf->device_lock);
-		spin_lock(&conf->device_lock);
+		UNLOCKCONF(conf);
+		LOCKCONF(conf);
 	}
-	spin_unlock(&conf->device_lock);
+	});
 
 	printk(KERN_INFO "raidxor: raidxord inactive, handled %lu requests\n",
 	       handled);
@@ -1525,13 +1554,15 @@ static int raidxor_stop(mddev_t *mddev)
 {
 	raidxor_conf_t *conf = mddev_to_conf(mddev);
 
-	spin_lock(&conf->device_lock);
+	WITHLOCKCONF(conf, {
 	conf->status = RAIDXOR_CONF_STATUS_STOPPING;
-	spin_unlock(&conf->device_lock);
+	});
 
+#if 0
 	wait_event_lock_irq(conf->wait_for_line,
 			    atomic_read(&conf->cache->active_lines) == 0,
 			    conf->device_lock, /* nothing */);
+#endif
 
 	md_unregister_thread(mddev->thread);
 	mddev->thread = NULL;
@@ -1643,17 +1674,16 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 	mddev_t *mddev = q->queuedata;
 	raidxor_conf_t *conf = mddev_to_conf(mddev);
 	const int rw = bio_data_dir(bio);
-	raidxor_request_t *request;
 	stripe_t *stripe;
 	sector_t newsector;
 	struct bio_pair *split;
 
-	WITHLOCKCONF(conf, {
 	printk(KERN_EMERG "raidxor: got request\n");
 
 	printk(KERN_EMERG "raidxor: sector_to_stripe(conf, %llu, &newsector) called\n",
 	       (unsigned long long) bio->bi_sector);
 
+	WITHLOCKCONF(conf, {
 	stripe = raidxor_sector_to_stripe(conf, bio->bi_sector, &newsector);
 	CHECK(stripe, out_unlock, "no stripe found");
 
@@ -1672,9 +1702,9 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 
 	/* if no line is available, wait for it ... */
 	/* pack the request somewhere in the cache */
+	});
 
 	md_wakeup_thread(conf->mddev->thread);
-	});
 
 	printk(KERN_INFO "raidxor: handling %s request\n",
 	       (rw == READ) ? "read" : "write");
@@ -1682,7 +1712,7 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 	return 0;
 
 out_unlock:
-UNLOCKCONF(conf);
+	UNLOCKCONF(conf);
 /* out: */
 	bio_io_error(bio);
 	return 0;
