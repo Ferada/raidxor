@@ -12,29 +12,29 @@
 
 static int raidxor_cache_make_clean(cache_t *cache, unsigned int line)
 {
-	CHECK_ARG(cache, out);
-	CHECK_PLAIN(line < cache->n_lines, out);
+#define CHECK_RETURN_VALUE 1
+	CHECK_ARG_RET_VAL(cache);
+	CHECK_PLAIN_RET_VAL(line < cache->n_lines);
 
 	if (cache->lines[line].flags == CACHE_LINE_CLEAN) return 0;
-	if (cache->lines[line].flags != CACHE_LINE_READY) goto out;
+	CHECK_PLAIN_RET_VAL(cache->lines[line].flags != CACHE_LINE_READY);
 
 	cache->lines[line].flags = CACHE_LINE_CLEAN;
 	raidxor_cache_drop_line(cache, line);
 
 	return 0;
-out:
-	return 1;
 }
 
 static int raidxor_cache_make_ready(cache_t *cache, unsigned int line)
 {
+#define CHECK_RETURN_VALUE 1
 	unsigned int i;
 
-	CHECK_ARG(cache, out);
-	CHECK_PLAIN(line < cache->n_lines, out);
+	CHECK_ARG_RET_VAL(cache);
+	CHECK_PLAIN_RET_VAL(line < cache->n_lines);
 
 	if (cache->lines[line].flags == CACHE_LINE_READY) return 0;
-	if (cache->lines[line].flags != CACHE_LINE_CLEAN) goto out;
+	CHECK_PLAIN_RET_VAL(cache->lines[line].flags != CACHE_LINE_CLEAN);
 
 	cache->lines[line].flags = CACHE_LINE_READY;
 
@@ -45,7 +45,6 @@ static int raidxor_cache_make_ready(cache_t *cache, unsigned int line)
 	return 0;
 out_free_pages:
 	raidxor_cache_make_clean(cache, line);
-out:
 	return 1;
 }
 
@@ -54,6 +53,7 @@ static void raidxor_end_writeback_line(struct bio *bio, int error);
 
 static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 {
+#define CHECK_JUMP_LABEL out
 	cache_line_t *line;
 	stripe_t *stripe;
 	sector_t actual_sector;
@@ -62,18 +62,20 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 	unsigned int i, j, k, n_chunk_mult;
 	raidxor_conf_t *conf = cache->conf;
 
-	CHECK_ARG(cache, out);
-	CHECK_PLAIN(n < cache->n_lines, out);
+	CHECK_ARG(cache);
+	CHECK_PLAIN(n < cache->n_lines);
 
 	line = &cache->lines[n];
-	CHECK_PLAIN(line->flags == CACHE_LINE_READY, out);
+	CHECK_PLAIN(line->flags == CACHE_LINE_READY);
 
 	stripe = raidxor_sector_to_stripe(conf, line->sector,
 					  &actual_sector);
-	CHECK_PLAIN(stripe, out);
+	CHECK_PLAIN(stripe);
 	
 	rxbio = raidxor_alloc_bio(stripe->n_units);
-	CHECK_PLAIN(rxbio, out);
+	CHECK_PLAIN(rxbio);
+#undef CHECK_JUMP_LABEL
+#define CHECK_JUMP_LABEL out_free_bio
 
 	n_chunk_mult = cache->n_chunk_mult;
 
@@ -81,8 +83,8 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 		if (stripe->units[i]->redundant)
 			continue;
 		/* only one chunk */
-		rxbio->bios[i] = bio = bio_alloc(GFP_NOIO, cache->n_chunk_mult);
-		CHECK_ALLOC(rxbio->bios[i], out_free_bio);
+		rxbio->bios[i] = bio = bio_alloc(GFP_NOIO, n_chunk_mult);
+		CHECK_ALLOC(rxbio->bios[i]);
 
 		if (test_bit(Faulty, &stripe->units[i]->rdev->flags)) {
 			printk(KERN_INFO "raidxor: got a faulty drive"
@@ -123,6 +125,8 @@ out: __attribute__((unused))
 
 static int raidxor_cache_writeback_line(cache_t *cache, unsigned int n)
 {
+#undef CHECK_JUMP_LABEL
+#define CHECK_JUMP_LABEL out
 	cache_line_t *line;
 	stripe_t *stripe;
 	sector_t actual_sector;
@@ -131,26 +135,27 @@ static int raidxor_cache_writeback_line(cache_t *cache, unsigned int n)
 	struct bio *bio;
 	raidxor_conf_t *conf = cache->conf;
 
-	CHECK_ARG(cache, out);
-	CHECK(n < cache->n_lines, out, "n not inside number of lines");
+	CHECK_ARG(cache);
+	CHECK_PLAIN(n < cache->n_lines);
 
 	line = &cache->lines[n];
-	CHECK(line->flags == CACHE_LINE_DIRTY, out, "line not in dirty state");
+	CHECK_PLAIN(line->flags == CACHE_LINE_DIRTY);
 
 	stripe = raidxor_sector_to_stripe(conf, line->sector,
 					  &actual_sector);
-	CHECK(stripe, out, "no stripe found");
+	CHECK_PLAIN(stripe);
 
 	rxbio = raidxor_alloc_bio(stripe->n_units);
-	CHECK(rxbio, out, "couldn't allocate raidxor_bio_t");
+	CHECK_PLAIN(rxbio);
+#undef CHECK_JUMP_LABEL
+#define CHECK_JUMP_LABEL out_free_bio
 
 	n_chunk_mult = cache->n_chunk_mult;
 
 	for (i = 0; i < rxbio->n_bios; ++i) {
 		/* only one chunk */
 		rxbio->bios[i] = bio = bio_alloc(GFP_NOIO, cache->n_chunk_mult);
-		CHECK(rxbio->bios[i], out_free_bio,
-		      "couldn't allocate bio");
+		CHECK_ALLOC(rxbio->bios[i]);
 
 		if (test_bit(Faulty, &stripe->units[i]->rdev->flags)) {
 			printk(KERN_INFO "raidxor: got a faulty drive"
@@ -343,12 +348,14 @@ static int raidxor_check_same_size_and_layout(struct bio *x, struct bio *y)
 static int raidxor_xor_combine(struct bio *bioto, raidxor_bio_t *rxbio,
 			       encoding_t *encoding)
 {
+#undef CHECK_JUMP_LABEL
+#define CHECK_JUMP_LABEL out
 	/* since we have control over bioto and rxbio, every bio has size
 	   M * CHUNK_SIZE with CHUNK_SIZE = N * PAGE_SIZE */
 	unsigned long i;
 	struct bio *biofrom;
 
-	CHECK_ARGS3(out, bioto, rxbio, encoding);
+	CHECK_ARGS3(bioto, rxbio, encoding);
 
 	/* copying first bio buffers */
 	biofrom = raidxor_find_bio(rxbio, encoding->units[0]);
@@ -606,8 +613,11 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 	       (unsigned long long) bio->bi_sector);
 
 	WITHLOCKCONF(conf, {
+#undef CHECK_JUMP_LABEL
+#define CHECK_JUMP_LABEL out_unlock
+
 	stripe = raidxor_sector_to_stripe(conf, bio->bi_sector, &newsector);
-	CHECK(stripe, out_unlock, "no stripe found");
+	CHECK_PLAIN(stripe);
 
 #if 0
 	if (raidxor_bio_maybe_split_boundary(stripe, bio, newsector, &split)) {

@@ -102,6 +102,7 @@ static void raidxor_safe_free_conf(raidxor_conf_t *conf) {
 static void free_bio(struct bio *bio)
 {
 	unsigned long i;
+
 	CHECK_ARG_RET(bio);
 
 	for (i = 0; i < bio->bi_vcnt; ++i)
@@ -115,6 +116,7 @@ static void free_bio(struct bio *bio)
 static void free_bios(raidxor_bio_t *rxbio)
 {
 	unsigned long i;
+
 	CHECK_ARG_RET(rxbio);
 
 	for (i = 0; i < rxbio->n_bios; ++i)
@@ -124,6 +126,7 @@ static void free_bios(raidxor_bio_t *rxbio)
 static raidxor_bio_t * raidxor_alloc_bio(unsigned int nbios)
 {
 	raidxor_bio_t *result;
+
 	CHECK_PLAIN_RET_NULL(nbios);
 
 	result = kzalloc(sizeof(raidxor_bio_t) +

@@ -327,46 +327,50 @@ struct raidxor_bio {
 #define CHECK_HELPER(test,block,message)
 #endif
 
-#define CHECK(test,label,message) \
-	CHECK_HELPER(test, goto label, message)
+#define CHECK_RETURN_VALUE 1
+#define CHECK_JUMP_LABEL out
+
+#define CHECK_ARG_MESSAGE " missing"
+#define CHECK_ALLOC_MESSAGE "couldn't allocate "
+
+#define CHECK(test,message) \
+	CHECK_HELPER(test, goto (CHECK_JUMP_LABEL), message)
 #define CHECK_RET(test,message) \
 	CHECK_HELPER(test, return, message)
-#define CHECK_RET_VAL(test,value,message) \
-	CHECK_HELPER(test, return value, message)
+#define CHECK_RET_VAL(test,message) \
+	CHECK_HELPER(test, return (CHECK_RETURN_VALUE), message)
 #define CHECK_RET_NULL(test,message) \
 	CHECK_HELPER(test, return NULL, message)
 
-#define CHECK_PLAIN(test,label) \
-	CHECK(test, label, #test)
+#define CHECK_PLAIN(test) \
+	CHECK(test, #test)
 #define CHECK_PLAIN_RET(test) \
 	CHECK_RET(test, #test)
-#define CHECK_PLAIN_RET_VAL(test, value) \
-	CHECK_RET_VAL(test, value, #test)
+#define CHECK_PLAIN_RET_VAL(test) \
+	CHECK_RET_VAL(test, #test)
 #define CHECK_PLAIN_RET_NULL(test) \
 	CHECK_RET_NULL(test, #test)
 
-#define CHECK_ARG_MESSAGE " missing"
-#define CHECK_ARG(arg,label) \
-	CHECK(arg,label,#arg CHECK_ARG_MESSAGE)
+#define CHECK_ARG(arg) \
+	CHECK(arg, #arg CHECK_ARG_MESSAGE)
 #define CHECK_ARG_RET(arg) \
 	CHECK_RET(arg, #arg CHECK_ARG_MESSAGE);
-#define CHECK_ARG_RET_VAL(arg,value) \
-	CHECK_RET_VAL(arg, value, #arg CHECK_ARG_MESSAGE);
+#define CHECK_ARG_RET_VAL(arg) \
+	CHECK_RET_VAL(arg, #arg CHECK_ARG_MESSAGE);
 #define CHECK_ARG_RET_NULL(arg) \
-	CHECK_RET_NULL(arg, value #arg CHECK_ARG_MESSAGE);
+	CHECK_RET_NULL(arg, #arg CHECK_ARG_MESSAGE);
 
-#define CHECK_ARGS2(label,arg1,arg2) \
-	CHECK_ARG(arg1, label); CHECK_ARG(arg2, label)
-#define CHECK_ARGS3(label,arg1,arg2,arg3) \
-	CHECK_ARG(arg1, label); CHECK_ARGS2(label, arg2, arg3)
+#define CHECK_ARGS2(arg1,arg2) \
+	CHECK_ARG(arg1); CHECK_ARG(arg2)
+#define CHECK_ARGS3(arg1,arg2,arg3) \
+	CHECK_ARG(arg1); CHECK_ARGS2(arg2, arg3)
 
-#define CHECK_ALLOC_MESSAGE "couldn't allocate "
-#define CHECK_ALLOC(var,label) \
-	CHECK(var, label, CHECK_ALLOC_MESSAGE #var);
+#define CHECK_ALLOC(var) \
+	CHECK(var, CHECK_ALLOC_MESSAGE #var);
 #define CHECK_ALLOC_RET(var) \
 	CHECK_RET(var, CHECK_ALLOC_MESSAGE #var)
-#define CHECK_ALLOC_RET_VAL(var,value) \
-	CHECK_RET_VAL(var, label, CHECK_ALLOC_MESSAGE #var)
+#define CHECK_ALLOC_RET_VAL(var) \
+	CHECK_RET_VAL(var, CHECK_ALLOC_MESSAGE #var)
 #define CHECK_ALLOC_RET_NULL(var) \
 	CHECK_RET_NULL(var, CHECK_ALLOC_MESSAGE #var)
 
