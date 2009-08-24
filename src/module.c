@@ -22,25 +22,6 @@ static raidxor_bio_t * raidxor_alloc_bio(unsigned int nbios)
 #define RAIDXOR_RUN_TESTCASES 1
 
 #ifdef RAIDXOR_RUN_TESTCASES
-#if 0
-/**
- * raidxor_fill_bio() - sets the buffer at index and length to value
- *
- * Crashes because of __bio_kmap_atomic.
- */
-static void raidxor_fill_bio(struct bio *bio, unsigned long idx,
-			     unsigned char value, unsigned long length)
-{
-	unsigned char *data = __bio_kmap_atomic(bio, idx, KM_USER0);
-	if (!data) {
-		printk(KERN_INFO "raidxor: page mapping failed\n");
-		return;
-	}
-	memset(data, value, length);
-	__bio_kunmap_atomic(data, KM_USER0);
-}
-#endif
-
 /**
  * raidxor_fill_page() - fills page with a value
  *
@@ -873,90 +854,7 @@ static void raidxor_abort_request(raidxor_bio_t *rxbio, struct bio *bio,
 			      error);
 #endif
 }
-#if 0
-static void raidxor_end_write_request(struct bio *bio, int error)
-{
-	raidxor_bio_t *rxbio = (raidxor_bio_t *)(bio->bi_private);
-	struct bio *mbio = rxbio->master_bio;
 
-	printk(KERN_INFO "raidxor_end_write_request, %d\n", error);
-
-	raidxor_free_bio(bio);
-	printk(KERN_INFO "put page, remaining %d\n", atomic_read(&rxbio->remaining));
-
-	if (error)
-		raidxor_abort_request(rxbio, bio, error);
-	if (atomic_dec_and_test(&rxbio->remaining)) {
-		kfree(rxbio);
-		bio_endio(mbio, atomic_read(&rxbio->status));
-		if (atomic_read(&rxbio->status) != RAIDXOR_BIO_STATUS_NORMAL)
-			md_write_end(rxbio->mddev);
-	}
-}
-
-/**
- * raidxor_end_read_request() - combines read requests into master bio
- *
- * The single requests to each device end here.  The data is written
- * to the pages of the master bio and the request is closed.
- *
- * If all requests are done, the master bio is subsequently finished.
- *
- * TODO: Error handling is missing for now.
- */
-static void raidxor_end_read_request(struct bio *bio, int error)
-{
-	raidxor_bio_t *rxbio = (raidxor_bio_t *)(bio->bi_private);
-	raidxor_conf_t *conf = mddev_to_conf(rxbio->mddev);
-	unsigned long i, index;
-	struct bio *mbio = rxbio->master_bio;
-	unsigned long to_offset;
-	stripe_t *stripe = rxbio->stripe;
-	unsigned long length;
-
-	printk(KERN_INFO "raidxor_end_read_request, %d\n", error);
-
-	if (error || atomic_read(&rxbio->status) != RAIDXOR_BIO_STATUS_NORMAL)
-		goto out;
-
-	for (i = 0, index = 0; i < stripe->n_units; ++i) {
-		if (stripe->units[i]->redundant == 0)
-			++index;
-		if (stripe->units[i]->rdev->bdev == bio->bi_bdev)
-			break;
-	}
-
-	/* offset for the copy operations */
-	to_offset = index * conf->chunk_size;
-
-	/* if we don't have something to copy, do nothing.
-	   even better: move this check to make_request :) */
-	if (to_offset >= bio->bi_size)
-		goto out;
-
-	/* how many bytes from this request need to be copied? */
-	length = raidxor_compute_length(conf, stripe, mbio, index);
-
-	printk(KERN_INFO "raidxor_end_read_request: %lu will copy %lu bytes,"
-	       " or %lu blocks to mbio\n", index, length, length >> 9);
-
-	/* copy the data read, which is a continous chunk, to the scattered
-	   places in the master bio */
-	raidxor_scatter_copy_data(mbio, bio, length, to_offset,
-				  conf->chunk_size, stripe->n_data_units);
-
-out:
-	raidxor_free_bio(bio);
-	printk(KERN_INFO "put page, remaining %d\n", atomic_read(&rxbio->remaining));
-
-	if (error)
-		raidxor_abort_request(rxbio, bio, error);
-	if (atomic_dec_and_test(&rxbio->remaining)) {
-		kfree(rxbio);
-		bio_endio(mbio, atomic_read(&rxbio->status));
-	}
-}
-#endif
 static void raidxor_copy_bio(struct bio *bioto, struct bio *biofrom)
 {
 	unsigned long i;
@@ -1422,234 +1320,7 @@ static void raidxor_compute_length_and_pages(stripe_t *stripe,
 	*length = tmp;
 	*npages = tmp / PAGE_SIZE;
 }
-#if 0
-/**
- * raidxor_prepare_write_bio() - build several bios from one request
- *
- * Same assumptions as for raidxor_prepare_write_bio(), that is: not stripe
- * boundary crossing.
- *
- * We allocate memory for all request and copy the data to be written into
- * it.
- */
-static int raidxor_prepare_write_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
-{
-	struct bio *mbio = rxbio->master_bio, *rbio = NULL;
-	unsigned long chunk_size = conf->chunk_size;
-	stripe_t *stripe = rxbio->stripe;
-	unsigned long npages, length;
-	struct page *page;
-	unsigned long i, j;
-	/* number of redundant units we encountered */
-	unsigned long nredundant = 0;
 
-	/* we go over every unit, since we have to write redundant data */
-	rxbio->n_bios = stripe->n_units;
-
-	/* TODO: this should become a atomic variable */
-	atomic_set(&rxbio->remaining, rxbio->n_bios);
-
-	/* how much do we have to copy? */
-	raidxor_compute_length_and_pages(stripe, mbio, &length, &npages);
-
-	printk(KERN_INFO "raidxor: splitting into requests of length %lu a %lu pages\n",
-	       length, npages);
-	printk(KERN_INFO "%lu bios\n", rxbio->n_bios);
-
-	for (i = 0; i < rxbio->n_bios; ++i) {
-		printk(KERN_INFO "loop %lu\n", i);
-
-		rbio = bio_alloc(GFP_NOIO, npages);
-		if (!rbio) {
-			printk(KERN_INFO "couldn't allocate bio\n");
-			goto out_free_pages;
-		}
-		rxbio->bios[i] = rbio;
-
-		rbio->bi_rw = WRITE;
-		rbio->bi_private = rxbio;
-
-		rbio->bi_end_io = raidxor_end_write_request;
-
-		/* allocate pages ... */
-		for (j = 0; j < npages; ++j) {
-			page = alloc_page(GFP_NOIO);
-			if (!page) {
-				printk(KERN_INFO "raidxor: couldn't allocate pages\n");
-				goto out_free_pages;
-			}
-
-			rbio->bi_io_vec[j].bv_page = page;
-			rbio->bi_io_vec[j].bv_len = PAGE_SIZE;
-			/* FIXME: is this correct? */
-			rbio->bi_io_vec[j].bv_offset = j * PAGE_SIZE;
-		}
-
-		rbio->bi_bdev = stripe->units[i]->rdev->bdev;
-
-		/* we need to use do_div here */
-		rbio->bi_sector = rxbio->sector;
-		do_div(rbio->bi_sector, chunk_size >> 9);
-		rbio->bi_sector += stripe->units[i]->rdev->data_offset;
-
-		//rbio->bi_sector = stripe->units[i + k]->rdev->data_offset +
-		//	rxbio->sector / (chunk_size >> 9);
-
-		rbio->bi_size = length;
-		rbio->bi_vcnt = npages;
-
-		/* skip for now, see next loop */
-		if (stripe->units[i]->redundant == 1) {
-			++nredundant;
-			continue;
-		}
-
-		/* ... and copy the data to them, scattered in the original bio
-		   to a continous place in the resulting bio */
-		raidxor_gather_copy_data(rbio, mbio, length,
-					 chunk_size * (i - nredundant),
-					 chunk_size, stripe->n_data_units);
-	}
-
-	for (i = 0; i < rxbio->n_bios; ++i) {
-		if (stripe->units[i]->redundant == 0)
-			continue;
-		/* this is a request with xorred data
-		   so combine the appropriate resources */
-		raidxor_xor_combine(rbio, rxbio, stripe->units[i]->encoding);
-	}
-
-	return 0;
-
-out_free_pages:
-	raidxor_free_bios(rxbio);
-//out_free_rxbio:
-	kfree(rxbio);
-	bio_io_error(mbio);
-	return 1;
-}
-
-/**
- * raidxor_prepare_read_bio() - build several bios from one request
- *
- * The basic assumption is that we don't cross a stripe boundary (which
- * will be enforced by another function).
- *
- * We split according to mddev->chunk_size.
- */
-static int raidxor_prepare_read_bio(raidxor_conf_t *conf, raidxor_bio_t *rxbio)
-{
-	unsigned long i, j, k;
-	struct bio *mbio = rxbio->master_bio, *rbio;
-	struct page *page;
-	unsigned long npages, length;
-	unsigned long chunk_size = conf->chunk_size;
-	stripe_t *stripe = rxbio->stripe;
-
-	printk(KERN_INFO "raidxor: splitting from sector %llu, %llu bytes\n",
-	       (unsigned long long) mbio->bi_sector,
-	       (unsigned long long) mbio->bi_size);
-
-	/* we skip redundant units here! */
-	rxbio->n_bios = stripe->n_data_units;
-
-	atomic_set(&rxbio->remaining, rxbio->n_bios);
-
-	/* how much do we have to copy? */
-	raidxor_compute_length_and_pages(stripe, mbio, &length, &npages);
-
-	printk(KERN_INFO "raidxor: splitting into requests of length %lu a %lu pages\n",
-	       length, npages);
-	printk(KERN_INFO "%lu bios\n", rxbio->n_bios);
-
-	/* k serves as a offset because we've redundant units mixed in */
-	for (i = 0, k = 0; i < rxbio->n_bios; ++i) {
-		printk(KERN_INFO "loop %lu\n", i);
-
-		rbio = bio_alloc(GFP_NOIO, npages);
-		if (!rbio) {
-			printk(KERN_INFO "couldn't allocate bio\n");
-			goto out_free_pages;
-		}
-		rxbio->bios[i] = rbio;
-
-		rbio->bi_rw = READ;
-		rbio->bi_private = rxbio;
-
-		/* get the right data units */
-		for (; i + k < stripe->n_units;) {
-			printk(KERN_INFO "%lu + %lu = %lu\n",
-				i, k, i + k);
-
-			if (stripe->units[i + k]->redundant == 0)
-				break;
-
-			++k;
-		}
-
-		if (k == stripe->n_units) {
-			printk(KERN_INFO "couldn't find device, %lu\n", k);
-			goto out_free_pages;
-		}
-		rbio->bi_bdev = stripe->units[i + k]->rdev->bdev;
-
-		printk(KERN_INFO "raidxor: device is %lu\n", i + k);
-
-		if (test_bit(Faulty, &stripe->units[i + k]->rdev->flags)) {
-			/* TODO: see if we have a decoding equation for this unit,
-			   then change bi_end_io and do something useful */
-			printk(KERN_INFO "raidxor: got a faulty drive"
-			       " during a request, skipping for now\n");
-			goto out_free_pages;
-		}
-
-		/* we need to use do_div here because of 64bit systems */
-		rbio->bi_sector = rxbio->sector;
-		do_div(rbio->bi_sector, chunk_size >> 9);
-		rbio->bi_sector += stripe->units[i + k]->rdev->data_offset;
-		/* equivalent to
-		   rbio->bi_sector = stripe->units[i + k]->rdev->data_offset + 
-				     rxbio->sector / (chunk_size >> 9);
-		*/
-
-		rbio->bi_size = length;
-		rbio->bi_vcnt = npages;
-
-		printk(KERN_INFO "raidxor: sector %llu, chunk_size >> 9 = %lu,"
-		       " data_offset %llu\n",
-		       (unsigned long long) rxbio->sector,
-		       chunk_size >> 9,
-		       (unsigned long long) stripe->units[i + k]->rdev->data_offset);
-
-		printk(KERN_INFO "raidxor: request %lu goes to physical sector %llu\n",
-		       i, (unsigned long long) rbio->bi_sector);
-
-		rbio->bi_end_io = raidxor_end_read_request;
-
-		for (j = 0; j < npages; ++j) {
-			page = alloc_page(GFP_NOIO);
-			if (!page) {
-				printk(KERN_INFO "raidxor: couldn't allocate pages\n");
-				goto out_free_pages;
-			}
-
-			rbio->bi_io_vec[j].bv_page = page;
-			rbio->bi_io_vec[j].bv_len = PAGE_SIZE;
-			/* FIXME: is this correct? */
-			rbio->bi_io_vec[j].bv_offset = j * PAGE_SIZE;
-		}
-	}
-
-	return 0;
-
-out_free_pages:
-	raidxor_free_bios(rxbio);
-//out_free_rxbio:
-	kfree(rxbio);
-	bio_io_error(mbio);
-	return 1;
-}
-#endif
 /**
  * raidxord() - daemon thread
  *
@@ -1666,10 +1337,12 @@ static void raidxord(mddev_t *mddev)
 	printk(KERN_INFO "raidxor: raidxord active\n");
 
 	spin_lock(&conf->device_lock);
-	for (; conf->status == RAIDXOR_CONF_STATUS_NORMAL;) {
+	for (; conf->status != RAIDXOR_CONF_STATUS_STOPPING;) {
 		/* go through all cache lines, see if anything can be done */
 		/* if the target device is faulty, start repair if possible,
 		   else signal an error on that request */
+		spin_unlock(&conf->device_lock);
+		spin_lock(&conf->device_lock);
 	}
 	spin_unlock(&conf->device_lock);
 
@@ -1737,6 +1410,8 @@ static int raidxor_run(mddev_t *mddev)
 	spin_lock_init(&conf->device_lock);
 	mddev->queue->queue_lock = &conf->device_lock;
 
+	init_waitqueue_head(&conf->wait_for_line);
+
 	size = -1; /* rdev->size is in sectors, that is 1024 byte */
 
 	i = conf->n_units - 1;
@@ -1798,6 +1473,14 @@ out_inval:
 static int raidxor_stop(mddev_t *mddev)
 {
 	raidxor_conf_t *conf = mddev_to_conf(mddev);
+
+	spin_lock(&conf->device_lock);
+	conf->status = RAIDXOR_CONF_STATUS_STOPPING;
+	spin_unlock(&conf->device_lock);
+
+	wait_event_lock_irq(conf->wait_for_line,
+			    atomic_read(&conf->cache->active_lines) == 0,
+			    conf->device_lock, /* nothing */);
 
 	md_unregister_thread(mddev->thread);
 	mddev->thread = NULL;
@@ -1921,9 +1604,9 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 	       (unsigned long long) bio->bi_sector);
 
 	stripe = raidxor_sector_to_stripe(conf, bio->bi_sector, &newsector);
+	CHECK(stripe, out_unlock, "no stripe found");
 
-	goto out_unlock;
-
+#if 0
 	if (raidxor_bio_maybe_split_boundary(stripe, bio, newsector, &split)) {
 		if (!split)
 			goto out_unlock;
@@ -1934,6 +1617,7 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 
 		return 0;
 	}
+#endif
 
 	/* if no line is available, wait for it ... */
 	/* pack the request somewhere in the cache */

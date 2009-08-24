@@ -47,6 +47,7 @@ struct cache_line {
  */
 struct cache {
 	raidxor_conf_t *conf;
+	atomic_t active_lines;
 	unsigned int n_lines, n_buffers, n_chunk_mult;
 
 	cache_line_t lines[0];
@@ -249,6 +250,8 @@ struct raidxor_conf {
 	unsigned long chunk_size;
 	sector_t stripe_size;
 
+	wait_queue_head_t wait_for_line;
+
 	cache_t *cache;
 
 	unsigned int configured;
@@ -279,6 +282,7 @@ struct raidxor_conf {
 
 #define RAIDXOR_CONF_STATUS_NORMAL 0
 #define RAIDXOR_CONF_STATUS_INCOMPLETE 1
+#define RAIDXOR_CONF_STATUS_STOPPING 2
 /* #define RAIDXOR_CONF_STATUS_ERROR 2 */
 
 
