@@ -7,11 +7,13 @@ static struct bio * raidxor_find_bio(raidxor_bio_t *rxbio, disk_info_t *unit)
 {
 	unsigned long i;
 
+	CHECK_ARG_RET_NULL(rxbio);
+	CHECK_ARG_RET_NULL(unit);
+
 	/* goes to the bdevs to find a matching bio */
 	for (i = 0; i < rxbio->n_bios; ++i)
 		if (rxbio->bios[i]->bi_bdev == unit->rdev->bdev)
 			return rxbio->bios[i];
-
 	return NULL;
 }
 
@@ -25,10 +27,12 @@ static disk_info_t * raidxor_find_unit_bdev(stripe_t *stripe,
 {
 	unsigned long i;
 
+	CHECK_ARG_RET_NULL(stripe);
+	CHECK_ARG_RET_NULL(bdev);
+
 	for (i = 0; i < stripe->n_units; ++i)
 		if (stripe->units[i]->rdev->bdev == bdev)
 			return stripe->units[i];
-
 	return NULL;
 }
 
@@ -56,10 +60,12 @@ static disk_info_t * raidxor_find_unit_conf_rdev(raidxor_conf_t *conf, mdk_rdev_
 {
 	unsigned int i;
 
+	CHECK_ARG_RET_NULL(conf);
+	CHECK_ARG_RET_NULL(rdev);
+
 	for (i = 0; i < conf->n_units; ++i)
 		if (conf->units[i].rdev == rdev)
 			return &conf->units[i];
-
 	return NULL;
 }
 
@@ -71,11 +77,7 @@ static disk_info_t * raidxor_find_unit_conf_rdev(raidxor_conf_t *conf, mdk_rdev_
 static void raidxor_safe_free_conf(raidxor_conf_t *conf) {
 	unsigned long i;
 
-	if (!conf) {
-		printk(KERN_DEBUG "raidxor: NULL pointer "
-		       "in raidxor_safe_free_conf\n");
-		return;
-	}
+	CHECK_ARG_RET(conf);
 
 	if (conf->resources != NULL) {
 		for (i = 0; i < conf->n_resources; ++i)
@@ -100,6 +102,8 @@ static void raidxor_safe_free_conf(raidxor_conf_t *conf) {
 static void free_bio(struct bio *bio)
 {
 	unsigned long i;
+	CHECK_ARG_RET(bio);
+
 	for (i = 0; i < bio->bi_vcnt; ++i)
 		safe_put_page(bio->bi_io_vec[i].bv_page);
 	bio_put(bio);
@@ -111,6 +115,8 @@ static void free_bio(struct bio *bio)
 static void free_bios(raidxor_bio_t *rxbio)
 {
 	unsigned long i;
+	CHECK_ARG_RET(rxbio);
+
 	for (i = 0; i < rxbio->n_bios; ++i)
 		if (rxbio->bios[i]) free_bio(rxbio->bios[i]);
 }
@@ -118,14 +124,14 @@ static void free_bios(raidxor_bio_t *rxbio)
 static raidxor_bio_t * raidxor_alloc_bio(unsigned int nbios)
 {
 	raidxor_bio_t *result;
+	CHECK_PLAIN_RET_NULL(nbios);
 
 	result = kzalloc(sizeof(raidxor_bio_t) +
 			 sizeof(struct bio *) * nbios,
 			 GFP_NOIO);
+	CHECK_ALLOC_RET_NULL(result);
 
-	if (!result) return NULL;
 	result->n_bios = nbios;
-
 	return result;
 }
 
@@ -148,28 +154,31 @@ static cache_t * raidxor_alloc_cache(unsigned int n_lines, unsigned int n_buffer
 	unsigned int i;
 	cache_t *cache;
 
+	CHECK_PLAIN_RET_NULL(n_lines != 0);
+	CHECK_PLAIN_RET_NULL(n_buffers != 0);
+	CHECK_PLAIN_RET_NULL(n_chunk_mult != 0);
+
 	cache = kzalloc(sizeof(cache_t) +
 			(sizeof(cache_line_t) +
 			 sizeof(struct page *) * n_buffers) * n_lines,
 			GFP_NOIO);
-	if (!cache) goto out;
+	CHECK_ALLOC_RET_NULL(cache);
 
 	cache->n_lines = n_lines;
 	cache->n_buffers = n_buffers;
 	cache->n_chunk_mult = n_chunk_mult;
 
-	for (i = 0; i < n_lines; ++i) {
+	for (i = 0; i < n_lines; ++i)
 		cache->lines[i].flags = CACHE_LINE_CLEAN;
-	}
-
 	return cache;
-out:
-	return NULL;
 }
 
 static void raidxor_cache_drop_line(cache_t *cache, unsigned int line)
 {
 	unsigned int i;
+
+	CHECK_ARG_RET(cache);
+	CHECK_PLAIN_RET(line < cache->n_lines);
 
 	for (i = 0; i < cache->n_buffers; ++i)
 		safe_put_page(cache->lines[line].buffers[i]);
@@ -179,7 +188,7 @@ static void raidxor_free_cache(cache_t *cache)
 {
 	unsigned int i;
 
-	if (!cache) return;
+	CHECK_ARG_RET(cache);
 
 	for (i = 0; i < cache->n_lines; ++i)
 		raidxor_cache_drop_line(cache, i);

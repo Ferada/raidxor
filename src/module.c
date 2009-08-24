@@ -12,14 +12,15 @@
 
 static int raidxor_cache_make_clean(cache_t *cache, unsigned int line)
 {
-	if (!cache || line >= cache->n_lines) goto out;
-	if (cache->lines[line].flags == CACHE_LINE_CLEAN) goto out_success;
+	CHECK_ARG(cache, out);
+	CHECK_PLAIN(line < cache->n_lines, out);
+
+	if (cache->lines[line].flags == CACHE_LINE_CLEAN) return 0;
 	if (cache->lines[line].flags != CACHE_LINE_READY) goto out;
 
 	cache->lines[line].flags = CACHE_LINE_CLEAN;
 	raidxor_cache_drop_line(cache, line);
 
-out_success:
 	return 0;
 out:
 	return 1;
@@ -30,9 +31,9 @@ static int raidxor_cache_make_ready(cache_t *cache, unsigned int line)
 	unsigned int i;
 
 	CHECK_ARG(cache, out);
-	CHECK(line < cache->n_lines, out, "n not inside number of lines");
+	CHECK_PLAIN(line < cache->n_lines, out);
 
-	if (cache->lines[line].flags == CACHE_LINE_READY) goto out_success;
+	if (cache->lines[line].flags == CACHE_LINE_READY) return 0;
 	if (cache->lines[line].flags != CACHE_LINE_CLEAN) goto out;
 
 	cache->lines[line].flags = CACHE_LINE_READY;
@@ -41,7 +42,6 @@ static int raidxor_cache_make_ready(cache_t *cache, unsigned int line)
 		if (!(cache->lines[line].buffers[i] = alloc_page(GFP_NOIO)))
 			goto out_free_pages;
 
-out_success:
 	return 0;
 out_free_pages:
 	raidxor_cache_make_clean(cache, line);
@@ -63,17 +63,17 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 	raidxor_conf_t *conf = cache->conf;
 
 	CHECK_ARG(cache, out);
-	CHECK(n < cache->n_lines, out, "n not inside number of lines");
+	CHECK_PLAIN(n < cache->n_lines, out);
 
 	line = &cache->lines[n];
-	CHECK(line->flags == CACHE_LINE_READY, out, "line not in ready state");
+	CHECK_PLAIN(line->flags == CACHE_LINE_READY, out);
 
 	stripe = raidxor_sector_to_stripe(conf, line->sector,
 					  &actual_sector);
-	CHECK(stripe, out, "no stripe found");
+	CHECK_PLAIN(stripe, out);
 	
 	rxbio = raidxor_alloc_bio(stripe->n_units);
-	CHECK(rxbio, out, "couldn't allocate raidxor_bio_t");
+	CHECK_PLAIN(rxbio, out);
 
 	n_chunk_mult = cache->n_chunk_mult;
 
@@ -82,8 +82,7 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 			continue;
 		/* only one chunk */
 		rxbio->bios[i] = bio = bio_alloc(GFP_NOIO, cache->n_chunk_mult);
-		CHECK(rxbio->bios[i], out_free_bio,
-		      "couldn't allocate bio");
+		CHECK_ALLOC(rxbio->bios[i], out_free_bio);
 
 		if (test_bit(Faulty, &stripe->units[i]->rdev->flags)) {
 			printk(KERN_INFO "raidxor: got a faulty drive"
@@ -117,7 +116,7 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 	return 0;
 out_free_bio:
 	raidxor_free_bio(rxbio);
-out:
+out: __attribute__((unused))
 	/* bio_error the listed requests */
 	return 1;
 }
@@ -191,7 +190,7 @@ static int raidxor_cache_writeback_line(cache_t *cache, unsigned int n)
 	return 0;
 out_free_bio:
 	raidxor_free_bio(rxbio);
-out:
+out: __attribute__((unused))
 	return 1;
 }
 
@@ -634,7 +633,7 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 
 	return 0;
 
-out_unlock:
+out_unlock: __attribute__((unused))
 	UNLOCKCONF(conf);
 /* out: */
 	bio_io_error(bio);
