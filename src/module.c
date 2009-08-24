@@ -29,7 +29,7 @@ static int raidxor_cache_make_ready(cache_t *cache, unsigned int line)
 {
 	unsigned int i;
 
-	CHECK(cache, out, "no cache");
+	CHECK_ARG(cache, out);
 	CHECK(line < cache->n_lines, out, "n not inside number of lines");
 
 	if (cache->lines[line].flags == CACHE_LINE_READY) goto out_success;
@@ -62,7 +62,7 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 	unsigned int i, j, k, n_chunk_mult;
 	raidxor_conf_t *conf = cache->conf;
 
-	CHECK(cache, out, "no cache");
+	CHECK_ARG(cache, out);
 	CHECK(n < cache->n_lines, out, "n not inside number of lines");
 
 	line = &cache->lines[n];
@@ -132,7 +132,7 @@ static int raidxor_cache_writeback_line(cache_t *cache, unsigned int n)
 	struct bio *bio;
 	raidxor_conf_t *conf = cache->conf;
 
-	CHECK(cache, out, "no cache");
+	CHECK_ARG(cache, out);
 	CHECK(n < cache->n_lines, out, "n not inside number of lines");
 
 	line = &cache->lines[n];
@@ -349,9 +349,7 @@ static int raidxor_xor_combine(struct bio *bioto, raidxor_bio_t *rxbio,
 	unsigned long i;
 	struct bio *biofrom;
 
-	CHECK(bioto, out, "bioto missing");
-	CHECK(rxbio, out, "bioto missing");
-	CHECK(encoding, out, "bioto missing");
+	CHECK_ARGS3(out, bioto, rxbio, encoding);
 
 	/* copying first bio buffers */
 	biofrom = raidxor_find_bio(rxbio, encoding->units[0]);

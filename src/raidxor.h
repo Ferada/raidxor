@@ -315,11 +315,17 @@ struct raidxor_bio {
 };
 
 #define CHECK_LEVEL KERN_EMERG
-#define CHECK(pointer,label,message) \
-	if (!(pointer)) { \
+#define CHECK(test,label,message) \
+	if (!(test)) { \
 		printk(CHECK_LEVEL "%s:%u:raidxor: check failed: %s\n", \
 		       __FILE__, __LINE__, message); \
 		goto label; \
 	}
+#define CHECK_ARG(arg,label) \
+	CHECK(arg,label,#label " missing")
+#define CHECK_ARGS2(label,arg1,arg2) \
+	CHECK_ARG(arg1, label); CHECK_ARG(arg2, label)
+#define CHECK_ARGS3(label,arg1,arg2,arg3) \
+	CHECK_ARG(arg1, label); CHECK_ARGS2(label, arg2, arg3)
 
 #endif
