@@ -878,17 +878,49 @@ static struct bio * raidxor_find_bio(raidxor_bio_t *rxbio, disk_info_t *unit)
 }
 
 /**
- * raidxor_find_unit() - searches for the corresponding unit for a single bio
+ * raidxor_find_unit() - searches the corresponding unit for a rdev
  *
  * Returns NULL if not found.
  */
-static disk_info_t * raidxor_find_unit(raidxor_bio_t *rxbio, struct bio *bio)
+static disk_info_t * raidxor_find_unit_bdev(stripe_t *stripe,
+					    struct block_device *bdev)
 {
 	unsigned long i;
 
-	for (i = 0; i < rxbio->stripe->n_units; ++i)
-		if (rxbio->stripe->units[i]->rdev->bdev == bio->bi_bdev)
-			return rxbio->stripe->units[i];
+	for (i = 0; i < stripe->n_units; ++i)
+		if (stripe->units[i]->rdev->bdev == bdev)
+			return stripe->units[i];
+
+	return NULL;
+}
+
+/**
+ * raidxor_find_unit() - searches the corresponding unit for a rdev
+ *
+ * Returns NULL if not found.
+ */
+static disk_info_t * raidxor_find_unit_rdev(stripe_t *stripe, mdk_rdev_t *rdev)
+{
+	return raidxor_find_unit_bdev(stripe, rdev->bdev);
+}
+
+/**
+ * raidxor_find_unit() - searches the corresponding unit for a single bio
+ *
+ * Returns NULL if not found.
+ */
+static disk_info_t * raidxor_find_unit_bio(stripe_t *stripe, struct bio *bio)
+{
+	return raidxor_find_unit_bdev(stripe, bio->bi_bdev);
+}
+
+static disk_info_t * raidxor_find_unit_conf_rdev(raidxor_conf_t *conf, mdk_rdev_t *rdev)
+{
+	unsigned int i;
+
+	for (i = 0; i < conf->n_units; ++i)
+		if (conf->units[i].rdev == rdev)
+			return &conf->units[i];
 
 	return NULL;
 }
@@ -1060,13 +1092,15 @@ out:
 
 static void raidxor_error(mddev_t *mddev, mdk_rdev_t *rdev)
 {
-	raidxor_conf_t *conf = mddev_to_conf(mddev);
 	char buffer[BDEVNAME_SIZE];
+	raidxor_conf_t *conf = mddev_to_conf(mddev);
+	disk_info_t *unit = raidxor_find_unit_conf_rdev(conf, rdev);
 
 	WITHLOCKCONF(conf, {
 	if (!test_bit(Faulty, &rdev->flags)) {
 		set_bit(Faulty, &rdev->flags);
-		/* set_bit( */
+		set_bit(STRIPE_FAULTY, &unit->stripe->flags);
+		set_bit(CONF_FAULTY, &conf->flags);
 		printk(KERN_ALERT "raidxor: disk failure on %s, disabling"
 		       " device\n", bdevname(rdev->bdev, buffer));
 	}
