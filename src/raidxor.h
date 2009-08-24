@@ -27,7 +27,7 @@ typedef struct raidxor_request raidxor_request_t;
  * @buffers: actual data
  */
 struct cache_line {
-	unsigned int flags;
+	unsigned long flags;
 	sector_t sector;
 
 	struct bio *waiting;
@@ -214,11 +214,14 @@ struct raidxor_resource {
  * units = [u1 r1 r2 u2 u3] order as in parameter list.
  */
 struct stripe {
+	unsigned long flags;
 	sector_t size;
 	unsigned int n_data_units;
 	unsigned int n_units;
 	disk_info_t *units[0];
 };
+
+#define STRIPE_FAULTY 1
 
 static stripe_t * raidxor_sector_to_stripe(raidxor_conf_t *conf,
 					   sector_t sector,
@@ -247,7 +250,7 @@ struct raidxor_conf {
 	mddev_t *mddev;
  	spinlock_t device_lock;
 
-	unsigned int status;
+	unsigned long flags;
 
 	unsigned long chunk_size;
 	sector_t stripe_size;
@@ -282,12 +285,10 @@ struct raidxor_conf {
 	do block while(0); \
 	UNLOCKCONF(conf);
 
-#define RAIDXOR_CONF_STATUS_NORMAL 0
-#define RAIDXOR_CONF_STATUS_INCOMPLETE 1
-#define RAIDXOR_CONF_STATUS_STOPPING 2
-/* #define RAIDXOR_CONF_STATUS_ERROR 2 */
-
-
+/* #define RAIDXOR_CONF_STATUS_NORMAL 0 */
+#define CONF_INCOMPLETE 1
+#define CONF_FAULTY 2
+#define CONF_STOPPING 4
 
 /**
  * struct raidxor_bio - private information for bio transfers from and to stripes
