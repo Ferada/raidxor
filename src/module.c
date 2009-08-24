@@ -5,426 +5,10 @@
 
 #include "raidxor.h"
 
+#include "utils.c"
+#include "conf.c"
+
 #define RAIDXOR_RUN_TESTCASES 1
-
-/**
- * raidxor_safe_free_conf() - frees resource and stripe information
- *
- * Must be called inside conf lock.
- */
-static void raidxor_safe_free_conf(raidxor_conf_t *conf) {
-	unsigned long i;
-
-	if (!conf) {
-		printk(KERN_DEBUG "raidxor: NULL pointer "
-		       "in raidxor_safe_free_conf\n");
-		return;
-	}
-
-	if (conf->resources != NULL) {
-		for (i = 0; i < conf->n_resources; ++i)
-			kfree(conf->resources[i]);
-		kfree(conf->resources);
-		conf->resources = NULL;
-	}
-
-	if (conf->stripes != NULL) {
-		for (i = 0; i < conf->n_stripes; ++i)
-			kfree(conf->stripes[i]);
-		kfree(conf->stripes);
-		conf->stripes = NULL;
-	}
-	
-	conf->configured = 0;
-}
-
-/**
- * raidxor_try_configure_raid() - configures the raid
- *
- * Checks, if enough information was supplied through sysfs and if so,
- * completes the configuration with the data.
- */
-static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
-	resource_t **resources;
-	stripe_t **stripes;
-	disk_info_t *unit;
-	unsigned long i, j, old_data_units = 0;
-	char buffer[32];
-	mddev_t *mddev = conf->mddev;
-
-	if (!conf || !mddev) {
-		printk(KERN_DEBUG "raidxor: NULL pointer in "
-		       "raidxor_free_conf\n");
-		return;
-	}
-
-	if (conf->n_resources <= 0 || conf->units_per_resource <= 0) {
-		printk(KERN_INFO "raidxor: need number of resources or "
-		       "units per resource: %lu or %lu\n",
-		       conf->n_resources, conf->units_per_resource);
-		goto out;
-	}
-
-	if (conf->n_resources * conf->units_per_resource != conf->n_units) {
-		printk(KERN_INFO
-		       "raidxor: parameters don't match %lu * %lu != %lu\n",
-		       conf->n_resources, conf->units_per_resource,
-		       conf->n_units);
-		goto out;
-	}
-
-	for (i = 0; i < conf->n_units; ++i) {
-		if (conf->units[i].redundant == -1) {
-			printk(KERN_INFO
-			       "raidxor: unit %lu, %s is not initialized\n",
-			       i, bdevname(conf->units[i].rdev->bdev, buffer));
-			goto out;
-		}
-	}
-
-	printk(KERN_INFO "raidxor: got enough information, building raid\n");
-
-	resources = kzalloc(sizeof(resource_t *) * conf->n_resources,
-			    GFP_KERNEL);
-	if (!resources)
-		goto out;
-
-	for (i = 0; i < conf->n_resources; ++i) {
-		resources[i] = kzalloc(sizeof(resource_t) +
-				       (sizeof(disk_info_t *) *
-					conf->units_per_resource), GFP_KERNEL);
-		if (!resources[i])
-			goto out_free_res;
-	}
-
-	conf->n_stripes = conf->units_per_resource;
-
-	stripes = kzalloc(sizeof(stripe_t *) * conf->n_stripes, GFP_KERNEL);
-	if (!stripes)
-		goto out_free_res;
-
-	for (i = 0; i < conf->n_stripes; ++i) {
-		stripes[i] = kzalloc(sizeof(stripe_t) +
-				     (sizeof(disk_info_t *) *
-				      conf->n_resources), GFP_KERNEL);
-		if (!stripes[i])
-			goto out_free_stripes;
-	}
-
-	for (i = 0; i < conf->n_resources; ++i) {
-		resources[i]->n_units = conf->units_per_resource;
-		for (j = 0; j < conf->units_per_resource; ++j) {
-			unit = &conf->units[i + j * conf->n_resources];
-
-			unit->resource = resources[i];
-			resources[i]->units[j] = unit;
-		}
-	}
-
-	printk(KERN_INFO "now calculating stripes and sizes\n");
-
-	for (i = 0; i < conf->n_stripes; ++i) {
-		printk(KERN_INFO "direct: stripes[%lu] %p\n", i, stripes[i]);
-		stripes[i]->n_units = conf->n_units / conf->n_stripes;
-		printk(KERN_INFO "using %d units per stripe\n", stripes[i]->n_units);
-		printk(KERN_INFO "going through %d units\n", stripes[i]->n_units);
-
-		for (j = 0; j < stripes[i]->n_units; ++j) {
-			printk(KERN_INFO "using unit %lu for stripe %lu, index %lu\n",
-			       i + conf->units_per_resource * j, i, j);
-			unit = &conf->units[i + conf->units_per_resource * j];
-
-			unit->stripe = stripes[i];
-
-			if (unit->redundant == 0)
-				++stripes[i]->n_data_units;
-			stripes[i]->units[j] = unit;
-		}
-
-		if (old_data_units == 0) {
-			old_data_units = stripes[i]->n_data_units;
-		}
-		else if (old_data_units != stripes[i]->n_data_units) {
-			printk(KERN_INFO "number of data units on two stripes"
-			       " are different: %lu on stripe %d where we"
-			       " assumed %lu\n",
-			       i, stripes[i]->n_data_units, old_data_units);
-			goto out_free_stripes;
-		}
-
-		stripes[i]->size = stripes[i]->n_data_units * mddev->size;
-	}
-
-	/* allocate the cache with a default of 10 lines;
-	   TODO: could be a driver option, or allow for shrinking/growing ... */	
-	/* one chunk is CHUNK_SIZE / PAGE_SIZE pages long, eqv. >> PAGE_SHIFT */
-	conf->cache = raidxor_alloc_cache(10, stripes[0]->n_data_units,
-					  conf->chunk_size >> PAGE_SHIFT);
-	if (!conf->cache)
-		goto out_free_stripes;
-	conf->cache->conf = conf;
-
-	printk(KERN_EMERG "and max sectors to %lu\n",
-	       PAGE_SIZE * stripes[0]->n_data_units / 512);
-	blk_queue_max_sectors(mddev->queue,
-			      PAGE_SIZE * stripes[0]->n_data_units / 512);
-
-	printk(KERN_INFO "setting device size\n");
-
-	/* since all stripes are equally long */
-	mddev->array_sectors = stripes[0]->size * conf->n_stripes;
-	set_capacity(mddev->gendisk, mddev->array_sectors);
-
-	printk (KERN_INFO "raidxor: array_sectors is %llu * %u = "
-		"%llu sectors, %llu blocks\n",
-		(unsigned long long) stripes[0]->size,
-		(unsigned int) conf->n_stripes,
-		(unsigned long long) mddev->array_sectors,
-		(unsigned long long) mddev->array_sectors * 2);
-
-	conf->stripe_size = stripes[0]->size;
-	conf->resources = resources;
-	conf->stripes = stripes;
-	conf->configured = 1;
-
-	return;
-
-out_free_stripes:
-	for (i = 0; i < conf->n_stripes; ++i)
-		kfree(stripes[i]);
-	kfree(stripes);
-out_free_res:
-	for (i = 0; i < conf->n_resources; ++i)
-		kfree(resources[i]);
-	kfree(resources);
-out:
-	return;
-}
-
-static ssize_t
-raidxor_show_units_per_resource(mddev_t *mddev, char *page)
-{
-	raidxor_conf_t *conf = mddev_to_conf(mddev);
-
-	if (conf)
-		return sprintf(page, "%lu\n", conf->units_per_resource);
-	else
-		return -ENODEV;
-}
-
-static ssize_t
-raidxor_store_units_per_resource(mddev_t *mddev, const char *page, size_t len)
-{
-	raidxor_conf_t *conf = mddev_to_conf(mddev);
-	unsigned long new;
-
-	if (len >= PAGE_SIZE)
-		return -EINVAL;
-	if (!conf)
-		return -ENODEV;
-
-	strict_strtoul(page, 10, &new);
-
-	if (new == 0)
-		return -EINVAL;
-
-	WITHLOCKCONF(conf, {
-	raidxor_safe_free_conf(conf);
-	conf->units_per_resource = new;
-	raidxor_try_configure_raid(conf);
-	});
-
-	return len;
-}
-
-static ssize_t
-raidxor_show_number_of_resources(mddev_t *mddev, char *page)
-{
-	raidxor_conf_t *conf = mddev_to_conf(mddev);
-
-	if (conf)
-		return sprintf(page, "%lu\n", conf->n_resources);
-	else
-		return -ENODEV;
-}
-
-static ssize_t
-raidxor_store_number_of_resources(mddev_t *mddev, const char *page, size_t len)
-{
-	raidxor_conf_t *conf = mddev_to_conf(mddev);
-	unsigned long new;
-
-	if (len >= PAGE_SIZE)
-		return -EINVAL;
-	if (!conf)
-		return -ENODEV;
-
-	strict_strtoul(page, 10, &new);
-
-	if (new == 0)
-		return -EINVAL;
-
-	WITHLOCKCONF(conf, {
-	raidxor_safe_free_conf(conf);
-	conf->n_resources = new;
-	raidxor_try_configure_raid(conf);
-	});
-
-	return len;
-}
-
-static ssize_t
-raidxor_show_encoding(mddev_t *mddev, char *page)
-{
-	return -EIO;
-}
-
-static ssize_t
-raidxor_store_encoding(mddev_t *mddev, const char *page, size_t len)
-{
-	raidxor_conf_t *conf = mddev_to_conf(mddev);
-	unsigned char index, redundant, length, i, red;
-	encoding_t *encoding;
-	size_t oldlen = len;
-
-	if (len >= PAGE_SIZE)
-		return -EINVAL;
-	if (!conf)
-		return -ENODEV;
-
-	for (; len >= 2;) {
-		index = *page++;
-		--len;
-
-		if (index >= conf->n_units)
-			goto out;
-
-		redundant = *page++;
-		--len;
-
-		if (redundant != 0 && redundant != 1)
-			return -EINVAL;
-
-		conf->units[index].redundant = redundant;
-
-		if (redundant == 0) {
-			printk(KERN_INFO "read non-redundant unit info\n");
-			continue;
-		}
-
-		if (len < 1)
-			goto out_reset;
-
-		length = *page++;
-		--len;
-
-		if (length > len)
-			goto out_reset;
-
-		encoding = kzalloc(sizeof(encoding_t) +
-				   sizeof(disk_info_t *) * length, GFP_NOIO);
-		if (!encoding)
-			goto out_reset;
-
-		for (i = 0; i < length; ++i) {
-			red = *page++;
-			--len;
-
-			if (red >= conf->n_units)
-				goto out_free_encoding;
-
-			encoding->units[i] = &conf->units[red];
-		}
-
-		conf->units[index].encoding = encoding;
-
-		printk(KERN_INFO "read redundant unit encoding info\n");
-	}
-
-	return oldlen;
-out_free_encoding:
-	kfree(encoding);
-out_reset:
-	conf->units[index].redundant = -1;
-out:
-	return -EINVAL;
-}
-
-static struct md_sysfs_entry
-raidxor_number_of_resources = __ATTR(number_of_resources, S_IRUGO | S_IWUSR,
-				     raidxor_show_number_of_resources,
-				     raidxor_store_number_of_resources);
-
-static struct md_sysfs_entry
-raidxor_units_per_resource = __ATTR(units_per_resource, S_IRUGO | S_IWUSR,
-				    raidxor_show_units_per_resource,
-				    raidxor_store_units_per_resource);
-
-static struct md_sysfs_entry
-raidxor_encoding = __ATTR(encoding, S_IRUGO | S_IWUSR,
-			  raidxor_show_encoding,
-			  raidxor_store_encoding);
-
-static struct attribute * raidxor_attrs[] = {
-	(struct attribute *) &raidxor_number_of_resources,
-	(struct attribute *) &raidxor_units_per_resource,
-	(struct attribute *) &raidxor_encoding,
-	NULL
-};
-
-static struct attribute_group raidxor_attrs_group = {
-	.name = NULL,
-	.attrs = raidxor_attrs,
-};
-
-/**
- * free_bio() - puts all pages in a bio and the bio itself
- */
-static void free_bio(struct bio *bio)
-{
-	unsigned long i;
-	for (i = 0; i < bio->bi_vcnt; ++i)
-		safe_put_page(bio->bi_io_vec[i].bv_page);
-	bio_put(bio);
-}
-
-/**
- * free_bios() - puts all bios (and their pages) in a raidxor_bio_t
- */
-static void free_bios(raidxor_bio_t *rxbio)
-{
-	unsigned long i;
-	for (i = 0; i < rxbio->n_bios; ++i)
-		if (rxbio->bios[i]) free_bio(rxbio->bios[i]);
-}
-
-static raidxor_bio_t * raidxor_alloc_bio(unsigned int nbios)
-{
-	raidxor_bio_t *result;
-
-	result = kzalloc(sizeof(raidxor_bio_t) +
-			 sizeof(struct bio *) * nbios,
-			 GFP_NOIO);
-
-	if (!result) return NULL;
-	result->n_bios = nbios;
-
-	return result;
-}
-
-static void raidxor_free_bio(raidxor_bio_t *rxbio)
-{
-	free_bios(rxbio);
-	kfree(rxbio);
-}
-
-static void raidxor_cache_drop_line(cache_t *cache, unsigned int line)
-{
-	unsigned int i;
-
-	for (i = 0; i < cache->n_buffers; ++i)
-		safe_put_page(cache->lines[line].buffers[i]);
-}
 
 static int raidxor_cache_make_clean(cache_t *cache, unsigned int line)
 {
@@ -439,50 +23,6 @@ out_success:
 	return 0;
 out:
 	return 1;
-}
-
-static void raidxor_free_cache(cache_t *cache)
-{
-	unsigned int i;
-
-	if (!cache) return;
-
-	for (i = 0; i < cache->n_lines; ++i)
-		raidxor_cache_drop_line(cache, i);
-
-	kfree(cache);
-}
-
-/**
- * raidxor_alloc_cache() - allocates a new cache with buffers
- * @n_lines: number of available lines in the cache
- * @n_buffers: buffers per line (equivalent to the width of a stripe times
-               chunk_mult)
- * @n_chunk_mult: number of buffers per chunk
- */
-static cache_t * raidxor_alloc_cache(unsigned int n_lines, unsigned int n_buffers,
-				     unsigned int n_chunk_mult)
-{
-	unsigned int i;
-	cache_t *cache;
-
-	cache = kzalloc(sizeof(cache_t) +
-			(sizeof(cache_line_t) +
-			 sizeof(struct page *) * n_buffers) * n_lines,
-			GFP_NOIO);
-	if (!cache) goto out;
-
-	cache->n_lines = n_lines;
-	cache->n_buffers = n_buffers;
-	cache->n_chunk_mult = n_chunk_mult;
-
-	for (i = 0; i < n_lines; ++i) {
-		cache->lines[i].flags = CACHE_LINE_CLEAN;
-	}
-
-	return cache;
-out:
-	return NULL;
 }
 
 static int raidxor_cache_make_ready(cache_t *cache, unsigned int line)
@@ -512,7 +52,7 @@ out:
 static void raidxor_end_load_line(struct bio *bio, int error);
 static void raidxor_end_writeback_line(struct bio *bio, int error);
 
-static void raidxor_cache_load_line(cache_t *cache, unsigned int n)
+static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 {
 	cache_line_t *line;
 	stripe_t *stripe;
@@ -573,14 +113,16 @@ static void raidxor_cache_load_line(cache_t *cache, unsigned int n)
 	for (i = 0; i < rxbio->n_bios; ++i)
 		if (rxbio->bios[i])
 			generic_make_request(rxbio->bios[i]);
+
+	return 0;
 out_free_bio:
 	raidxor_free_bio(rxbio);
 out:
 	/* bio_error the listed requests */
-	return;
+	return 1;
 }
 
-static void raidxor_cache_writeback_line(cache_t *cache, unsigned int n)
+static int raidxor_cache_writeback_line(cache_t *cache, unsigned int n)
 {
 	cache_line_t *line;
 	stripe_t *stripe;
@@ -645,10 +187,12 @@ static void raidxor_cache_writeback_line(cache_t *cache, unsigned int n)
 	for (i = 0; i < rxbio->n_bios; ++i)
 		if (rxbio->bios[i])
 			generic_make_request(rxbio->bios[i]);
+
+	return 0;
 out_free_bio:
 	raidxor_free_bio(rxbio);
 out:
-	return;
+	return 1;
 }
 
 static void raidxor_end_load_line(struct bio *bio, int error)
@@ -702,229 +246,6 @@ static void raidxor_end_writeback_line(struct bio *bio, int error)
 	});
 }
 
-/*
- * two helper macros in the following two functions, eventually they need
- * to have k(un)map functionality added
-*/
-#define NEXT_BVFROM do { bvfrom = bio_iovec_idx(biofrom, ++i); } while (0)
-#define NEXT_BVTO do { bvto = bio_iovec_idx(bioto, ++j); } while (0)
-
-/**
- * raidxor_gather_copy_data() - copies data from one bio to another
- *
- * Copies LENGTH bytes from BIOFROM to BIOTO.  Reading starts at FROM_OFFSET
- * from the beginning of BIOFROM and is performed at chunks of CHUNK_SIZE.
- * Writing starts at the beginning of BIOTO.  Data is written at every first
- * block of RASTER chunks.
- *
- * Corresponds to raidxor_scatter_copy_data().
- */
-static void raidxor_gather_copy_data(struct bio *bioto, struct bio *biofrom,
-				     unsigned long length,
-				     unsigned long from_offset,
-				     unsigned long chunk_size, unsigned int raster)
-{
-	unsigned int i = 0, j = 0;
-	struct bio_vec *bvfrom = bio_iovec_idx(biofrom, i);
-	struct bio_vec *bvto = bio_iovec_idx(bioto, j);
-	char *mapped;
-	unsigned long to_offset = 0;
-	unsigned int clen = 0;
-	unsigned long to_copy = min(length, chunk_size);
-
-	while (from_offset >= bvfrom->bv_len) {
-		from_offset -= bvfrom->bv_len;
-		NEXT_BVFROM;
-	}
-
-	/* FIXME: kmap, kunmap instead? */
-	mapped = __bio_kmap_atomic(bioto, j, KM_USER0);
-	while (length > 0) {
-		clen = (to_copy > bvfrom->bv_len) ? to_copy : bvfrom->bv_len;
-		clen = (clen > bvto->bv_len) ? clen : bvto->bv_len;
-
-		memcpy(mapped + bvto->bv_offset + to_offset,
-		       bvfrom->bv_page + bvfrom->bv_offset + from_offset,
-		       clen);
-
-		to_copy -= clen;
-		length -= clen;
-		from_offset += clen;
-		to_offset += clen;
-
-		if (to_copy > 0) {
-			if (from_offset == bvfrom->bv_len) {
-				from_offset = 0;
-				NEXT_BVFROM;
-			}
-		}
-		/* our chunk is finished, but we're still not done */
-		else if (length > 0 /* && to_copy == 0 */) {
-			/* advance the new location by raster */
-			from_offset += (raster - 1) * chunk_size;
-
-			/* go to the right biovec */
-			while (from_offset >= bvfrom->bv_len) {
-				from_offset -= bvfrom->bv_len;
-				NEXT_BVFROM;
-			}
-		}
-		if (to_offset == bvto->bv_len) {
-			to_offset = 0;
-			NEXT_BVTO;
-		}
-	}
-	__bio_kunmap_atomic(bioto, KM_USER0);
-}
-
-/**
- * raidxor_scatter_copy_data() - copies data from one bio to another
- *
- * Copies LENGTH bytes from BIOFROM to BIOTO.  Writing starts at TO_OFFSET from
- * the beginning of BIOTO and is performed at chunks of CHUNK_SIZE.  Reading
- * starts at the beginning of BIOFROM.  Data is written at every first block of
- * RASTER chunks.
- *
- * Corresponds to raidxor_gather_copy_data().
- */
-static void raidxor_scatter_copy_data(struct bio *bioto, struct bio *biofrom,
-				      unsigned long length,
-				      unsigned long to_offset,
-				      unsigned long chunk_size, unsigned int raster)
-{
-	unsigned int i = 0, j = 0;
-	unsigned long from_offset = 0;
-	struct bio_vec *bvfrom = bio_iovec_idx(biofrom, i);
-	struct bio_vec *bvto = bio_iovec_idx(bioto, j);
-	char *mapped;
-	/* the number of bytes in the memcpy call */
-	unsigned int clen = 0;
-	/* remainder which needs to be copied up to chunk_size, before we
-	   advance the memory locations */
-	unsigned long to_copy = min(length, chunk_size);
-
-	/* adjust offset and the vector so we actually write inside it, not
-	   supported for from_offset, since we assume that we start from the
-	   beginning on that bio */
-	while (to_offset >= bvto->bv_len) {
-		to_offset -= bvto->bv_len;
-		NEXT_BVTO;
-	}
-
-	/* FIXME: kmap, kunmap instead? */
-	mapped = __bio_kmap_atomic(bioto, j, KM_USER0);
-	while (length > 0) {
-		/* clip actual number bytes down so we don't try to copy
-		   beyond a biovec, both from and to */
-		clen = (to_copy > bvfrom->bv_len) ? to_copy : bvfrom->bv_len;
-		clen = (clen > bvto->bv_len) ? clen : bvto->bv_len;
-		//clen = min(min(to_copy, bvfrom->bv_len), bvto->bv_len);
-
-		memcpy(mapped + bvto->bv_offset + to_offset,
-		       bvfrom->bv_page + bvfrom->bv_offset + from_offset,
-		       clen);
-
-		to_copy -= clen;
-		length -= clen;
-		from_offset += clen;
-		to_offset += clen;
-
-		/* our chunk is not finished yet, so we adjust the locations */
-		/* FIXME: are theses matches exhaustive? */
-		if (to_copy > 0) {
-			if (to_offset == bvto->bv_len) {
-				to_offset = 0;
-				NEXT_BVTO;
-			}
-		}
-		/* our chunk is finished, but we're still not done */
-		else if (length > 0 /* && to_copy == 0 */) {
-			/* advance the new location by raster */
-			to_offset += (raster - 1) * chunk_size;
-
-			/* go to the right biovec */
-			while (to_offset >= bvto->bv_len) {
-				to_offset -= bvto->bv_len;
-				NEXT_BVTO;
-			}
-		}
-		if (from_offset == bvfrom->bv_len) {
-			from_offset = 0;
-			NEXT_BVFROM;
-		}
-	}
-	__bio_kunmap_atomic(bioto, KM_USER0);
-}
-
-#undef NEXT_BVFROM
-#undef NEXT_BVTO
-
-
-/**
- * raidxor_find_bio() - searches for the corresponding bio for a single unit
- *
- * Returns NULL if not found.
- */
-static struct bio * raidxor_find_bio(raidxor_bio_t *rxbio, disk_info_t *unit)
-{
-	unsigned long i;
-
-	/* goes to the bdevs to find a matching bio */
-	for (i = 0; i < rxbio->n_bios; ++i)
-		if (rxbio->bios[i]->bi_bdev == unit->rdev->bdev)
-			return rxbio->bios[i];
-
-	return NULL;
-}
-
-/**
- * raidxor_find_unit() - searches the corresponding unit for a rdev
- *
- * Returns NULL if not found.
- */
-static disk_info_t * raidxor_find_unit_bdev(stripe_t *stripe,
-					    struct block_device *bdev)
-{
-	unsigned long i;
-
-	for (i = 0; i < stripe->n_units; ++i)
-		if (stripe->units[i]->rdev->bdev == bdev)
-			return stripe->units[i];
-
-	return NULL;
-}
-
-/**
- * raidxor_find_unit() - searches the corresponding unit for a rdev
- *
- * Returns NULL if not found.
- */
-static disk_info_t * raidxor_find_unit_rdev(stripe_t *stripe, mdk_rdev_t *rdev)
-{
-	return raidxor_find_unit_bdev(stripe, rdev->bdev);
-}
-
-/**
- * raidxor_find_unit() - searches the corresponding unit for a single bio
- *
- * Returns NULL if not found.
- */
-static disk_info_t * raidxor_find_unit_bio(stripe_t *stripe, struct bio *bio)
-{
-	return raidxor_find_unit_bdev(stripe, bio->bi_bdev);
-}
-
-static disk_info_t * raidxor_find_unit_conf_rdev(raidxor_conf_t *conf, mdk_rdev_t *rdev)
-{
-	unsigned int i;
-
-	for (i = 0; i < conf->n_units; ++i)
-		if (conf->units[i].rdev == rdev)
-			return &conf->units[i];
-
-	return NULL;
-}
-
 /**
  * raidxor_compute_length() - computes the number of bytes to be read
  *
@@ -950,30 +271,6 @@ static unsigned long raidxor_compute_length(raidxor_conf_t *conf,
 		result += min(conf->chunk_size, over - index * conf->chunk_size);
 
 	return result;
-}
-
-static void raidxor_copy_bio(struct bio *bioto, struct bio *biofrom)
-{
-	unsigned long i;
-	unsigned char *tomapped, *frommapped;
-	unsigned char *toptr, *fromptr;
-	struct bio_vec *bvto, *bvfrom;
-
-	for (i = 0; i < bioto->bi_vcnt; ++i) {
-		bvto = bio_iovec_idx(bioto, i);
-		bvfrom = bio_iovec_idx(biofrom, i);
-
-		tomapped = (unsigned char *) kmap(bvto->bv_page);
-		frommapped = (unsigned char *) kmap(bvfrom->bv_page);
-
-		toptr = tomapped + bvto->bv_offset;
-		fromptr = frommapped + bvfrom->bv_offset;
-
-		memcpy(toptr, fromptr, min(bvto->bv_len, bvfrom->bv_len));
-
-		kunmap(bvfrom->bv_page);
-		kunmap(bvto->bv_page);
-	}
 }
 
 /**
@@ -1098,6 +395,7 @@ static void raidxor_error(mddev_t *mddev, mdk_rdev_t *rdev)
 
 	WITHLOCKCONF(conf, {
 	if (!test_bit(Faulty, &rdev->flags)) {
+		/* escalate error */
 		set_bit(Faulty, &rdev->flags);
 		set_bit(STRIPE_FAULTY, &unit->stripe->flags);
 		set_bit(CONF_FAULTY, &conf->flags);
@@ -1295,55 +593,6 @@ static int raidxor_stop(mddev_t *mddev)
 
 	return 0;
 }
-
-static void raidxor_status(struct seq_file *seq, mddev_t *mddev)
-{
-	seq_printf(seq, " I'm feeling fine");
-	return;
-}
-
-static int raidxor_bio_maybe_split_boundary(stripe_t *stripe, struct bio *bio,
-					    sector_t newsector,
-					    struct bio_pair **split)
-{
-	unsigned long result = stripe->size - (newsector << 9);
-	if (result < bio->bi_size) {
-		/* FIXME: what should first_sectors really be? */
-		//*split = bio_split(bio, NULL, result);
-		*split = NULL;
-		return 1;
-	}
-	return 0;
-}
-
-/**
- * raidxor_sector_to_stripe() - returns the stripe a virtual sector belongs to
- * @newsector: if non-NULL, the sector in the stripe is written here
- */
-static stripe_t * raidxor_sector_to_stripe(raidxor_conf_t *conf, sector_t sector,
-					   sector_t *newsector)
-{
-	unsigned int sectors_per_chunk = conf->chunk_size >> 9;
-	stripe_t **stripes = conf->stripes;
-	unsigned long i;
-
-	printk(KERN_EMERG "raidxor: sectors_per_chunk %u\n",
-	       sectors_per_chunk);
-
-	for (i = 0; i < conf->n_stripes; ++i) {
-		printk(KERN_EMERG "raidxor: stripe %lu, sector %lu\n",
-		       i, (unsigned long) sector);
-		if (sector <= stripes[i]->size >> 9)
-			break;
-		sector -= stripes[i]->size >> 9;
-	}
-
-	if (newsector)
-		*newsector = sector;
-
-	return stripes[i];
-}
-
 
 static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 {
