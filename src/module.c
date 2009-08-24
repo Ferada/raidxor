@@ -525,6 +525,7 @@ out:
 }
 
 static void raidxor_end_load_line(struct bio *bio, int error);
+static void raidxor_end_writeback_line(struct bio *bio, int error);
 
 static void raidxor_cache_load_line(cache_t *cache, unsigned int n)
 {
@@ -594,20 +595,6 @@ out:
 	return;
 }
 
-static void raidxor_end_load_line(struct bio *bio, int error)
-{
-	raidxor_bio_t *rxbio = (raidxor_bio_t *)(bio->bi_private);
-
-	/* set faulty bit on that device and inform the thread to take
-	   action */
-	//bio_io_error(rxbio->master_bio);
-	if (atomic_dec_and_test(&rxbio->remaining)) {
-		rxbio->line->flags = CACHE_LINE_UPTODATE;
-		atomic_dec(&rxbio->cache->active_lines);
-		kfree(rxbio);
-	}
-}
-
 static void raidxor_cache_writeback_line(cache_t *cache, unsigned int n)
 {
 	cache_line_t *line;
@@ -635,6 +622,57 @@ static void raidxor_cache_writeback_line(cache_t *cache, unsigned int n)
 	/* generic_make_request */
 out:
 	return;
+}
+
+static void raidxor_end_load_line(struct bio *bio, int error)
+{
+	raidxor_bio_t *rxbio = (raidxor_bio_t *)(bio->bi_private);
+
+	if (error) {
+		/* TODO: set faulty bit on that device */
+	}
+	else {
+		/* TODO: copy data around */
+	}
+
+	if (atomic_dec_and_test(&rxbio->remaining)) {
+		WITHLOCKCONF(rxbio->cache->conf, {
+		if (rxbio->line == CACHE_LINE_LOADING) {
+			rxbio->line->flags = CACHE_LINE_UPTODATE;
+		}
+		atomic_dec(&rxbio->cache->active_lines);
+		});
+		/* TODO: wake up waiting threads */
+
+		kfree(rxbio);
+	}
+}
+
+static void raidxor_end_writeback_line(struct bio *bio, int error)
+{
+	raidxor_bio_t *rxbio = (raidxor_bio_t *)(bio->bi_private);
+
+	if (error) {
+		/* TODO: set faulty bit on that device */
+		WITHLOCKCONF(rxbio->cache->conf, {
+			rxbio->line->flags = CACHE_LINE_DIRTY;
+		});
+	}
+	else {
+		/* TODO: copy data around */
+	}
+
+	if (atomic_dec_and_test(&rxbio->remaining)) {
+		WITHLOCKCONF(rxbio->cache->conf, {
+		if (rxbio->line->flags == CACHE_LINE_WRITEBACK) {
+			rxbio->line->flags = CACHE_LINE_UPTODATE;
+		}
+		atomic_dec(&rxbio->cache->active_lines);
+		});
+		/* TODO: wake up waiting threads */
+
+		kfree(rxbio);
+	}
 }
 
 /*
