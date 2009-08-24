@@ -5,6 +5,20 @@
 
 #include "raidxor.h"
 
+static raidxor_bio_t * raidxor_alloc_bio(unsigned int nbios)
+{
+	raidxor_bio_t *result;
+
+	result = kzalloc(sizeof(raidxor_bio_t) +
+			 sizeof(struct bio *) * nbios,
+			 GFP_NOIO);
+
+	if (!result) return NULL;
+	result->n_bios = nbios;
+
+	return result;
+}
+
 #define RAIDXOR_RUN_TESTCASES 1
 
 #ifdef RAIDXOR_RUN_TESTCASES
@@ -84,7 +98,6 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 	disk_info_t *unit;
 	unsigned long i, j, old_data_units = 0;
 	char buffer[32];
-	sector_t size;
 	mddev_t *mddev = conf->mddev;
 
 	if (!conf || !mddev) {
@@ -192,7 +205,9 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 
 	/* allocate the cache with a default of 10 lines;
 	   TODO: could be a driver option, or allow for shrinking/growing ... */	
-	conf->cache = allocate_cache(10, stripes[0]->n_data_units);
+	/* one chunk is CHUNK_SIZE / PAGE_SIZE pages long, eqv. >> PAGE_SHIFT */
+	conf->cache = raidxor_alloc_cache(10, stripes[0]->n_data_units,
+					  conf->chunk_size >> PAGE_SHIFT);
 	if (!conf->cache)
 		goto out_free_stripes;
 	conf->cache->conf = conf;
@@ -410,91 +425,6 @@ static struct attribute_group raidxor_attrs_group = {
 	.attrs = raidxor_attrs,
 };
 
-static void cache_drop_line(cache_t *cache, unsigned int line)
-{
-	unsigned int i;
-
-	for (i = 0; i < cache->n_buffers; ++i)
-		safe_put_page(cache->lines[line].buffers[i]);
-}
-
-static int cache_make_clean(cache_t *cache, unsigned int line)
-{
-	if (!cache || line >= cache->n_lines) goto out;
-	if (cache->lines[line].flags == CACHE_LINE_CLEAN) goto out_success;
-	if (cache->lines[line].flags != CACHE_LINE_READY) goto out;
-
-	cache->lines[line].flags = CACHE_LINE_CLEAN;
-	cache_drop_line(cache, line);
-
-out_success:
-	return 0;
-out:
-	return 1;
-}
-
-static void free_cache(cache_t *cache)
-{
-	unsigned int i;
-
-	if (!cache) return;
-
-	for (i = 0; i < cache->n_lines; ++i)
-		cache_drop_line(cache, i);
-
-	kfree(cache);
-}
-
-/**
- * allocate_cache() - allocates a new cache with buffers
- * @n_lines: number of available lines in the cache
- * @n_buffers: buffers per line (equivalent to the width of a stripe)
- */
-static cache_t * allocate_cache(unsigned int n_lines, unsigned int n_buffers)
-{
-	unsigned int i, j;
-	cache_t *cache;
-
-	cache = kzalloc(sizeof(cache_t) +
-			(sizeof(cache_line_t) +
-			 sizeof(struct page *) * n_buffers) * n_lines,
-			GFP_NOIO);
-	if (!cache) goto out;
-
-	cache->n_lines = n_lines;
-	cache->n_buffers = n_buffers;
-
-	for (i = 0; i < n_lines; ++i)
-		for (j = 0; j < n_buffers; ++j)
-			cache->lines[i].flags = CACHE_LINE_CLEAN;
-
-	return cache;
-out:
-	return NULL;
-}
-
-static int cache_make_ready(cache_t *cache, unsigned int line)
-{
-	unsigned int i;
-
-	if (!cache || line >= cache->n_lines) goto out;
-	if (cache->lines[line].flags == CACHE_LINE_READY) goto out_success;
-	if (cache->lines[line].flags != CACHE_LINE_CLEAN) goto out;
-
-	cache->lines[line].flags = CACHE_LINE_READY;
-
-	for (i = 0; i < cache->n_buffers; ++i)
-		if (!(cache->lines[line].buffers[i] = alloc_page(GFP_NOIO)))
-			goto out_free_pages;
-
-out_success:
-	return 0;
-out_free_pages:
-	cache_make_clean(cache, line);
-out:
-	return 1;
-}
-
 /**
  * raidxor_free_bio() - puts all pages in a bio and the bio itself
  */
@@ -514,6 +444,201 @@ static void raidxor_free_bios(raidxor_bio_t *rxbio)
 	unsigned long i;
 	for (i = 0; i < rxbio->n_bios; ++i)
 		if (rxbio->bios[i]) raidxor_free_bio(rxbio->bios[i]);
+}
+
+static void raidxor_cache_drop_line(cache_t *cache, unsigned int line)
+{
+	unsigned int i;
+
+	for (i = 0; i < cache->n_buffers; ++i)
+		safe_put_page(cache->lines[line].buffers[i]);
+}
+
+static int raidxor_cache_make_clean(cache_t *cache, unsigned int line)
+{
+	if (!cache || line >= cache->n_lines) goto out;
+	if (cache->lines[line].flags == CACHE_LINE_CLEAN) goto out_success;
+	if (cache->lines[line].flags != CACHE_LINE_READY) goto out;
+
+	cache->lines[line].flags = CACHE_LINE_CLEAN;
+	raidxor_cache_drop_line(cache, line);
+
+out_success:
+	return 0;
+out:
+	return 1;
+}
+
+static void raidxor_free_cache(cache_t *cache)
+{
+	unsigned int i;
+
+	if (!cache) return;
+
+	for (i = 0; i < cache->n_lines; ++i)
+		raidxor_cache_drop_line(cache, i);
+
+	kfree(cache);
+}
+
+/**
+ * raidxor_alloc_cache() - allocates a new cache with buffers
+ * @n_lines: number of available lines in the cache
+ * @n_buffers: buffers per line (equivalent to the width of a stripe times
+               chunk_mult)
+ * @n_chunk_mult: number of buffers per chunk
+ */
+static cache_t * raidxor_alloc_cache(unsigned int n_lines, unsigned int n_buffers,
+				     unsigned int n_chunk_mult)
+{
+	unsigned int i;
+	cache_t *cache;
+
+	cache = kzalloc(sizeof(cache_t) +
+			(sizeof(cache_line_t) +
+			 sizeof(struct page *) * n_buffers) * n_lines,
+			GFP_NOIO);
+	if (!cache) goto out;
+
+	cache->n_lines = n_lines;
+	cache->n_buffers = n_buffers;
+	cache->n_chunk_mult = n_chunk_mult;
+
+	for (i = 0; i < n_lines; ++i) {
+		cache->lines[i].flags = CACHE_LINE_CLEAN;
+	}
+
+	return cache;
+out:
+	return NULL;
+}
+
+static int raidxor_cache_make_ready(cache_t *cache, unsigned int line)
+{
+	unsigned int i;
+
+	CHECK(cache, out, "no cache");
+	CHECK(line < cache->n_lines, out, "n not inside number of lines");
+
+	if (cache->lines[line].flags == CACHE_LINE_READY) goto out_success;
+	if (cache->lines[line].flags != CACHE_LINE_CLEAN) goto out;
+
+	cache->lines[line].flags = CACHE_LINE_READY;
+
+	for (i = 0; i < cache->n_buffers; ++i)
+		if (!(cache->lines[line].buffers[i] = alloc_page(GFP_NOIO)))
+			goto out_free_pages;
+
+out_success:
+	return 0;
+out_free_pages:
+	raidxor_cache_make_clean(cache, line);
+out:
+	return 1;
+}
+
+static void raidxor_end_load_line(struct bio *bio, int error);
+
+static void raidxor_cache_load_line(cache_t *cache, unsigned int n)
+{
+	cache_line_t *line;
+	disk_info_t *unit;
+	stripe_t *stripe;
+	sector_t actual_sector;
+	raidxor_bio_t *rxbio;
+	struct bio *bio;
+	unsigned int i, j, k, n_chunk_mult;
+	raidxor_conf_t *conf = cache->conf;
+
+	CHECK(cache, out, "no cache");
+	CHECK(n < cache->n_lines, out, "n not inside number of lines");
+
+	line = &cache->lines[n];
+	CHECK(line->flags == CACHE_LINE_READY, out, "line not in ready state");
+
+	stripe = raidxor_sector_to_stripe(conf, line->sector,
+					  &actual_sector);
+	CHECK(stripe, out, "no stripe found");
+	
+	rxbio = raidxor_alloc_bio(stripe->n_units);
+	CHECK(rxbio, out, "couldn't allocate raidxor_bio_t");
+
+	n_chunk_mult = cache->n_chunk_mult;
+
+	for (i = 0; i < rxbio->n_bios; ++i) {
+		if (stripe->units[i]->redundant)
+			continue;
+		/* only one chunk */
+		rxbio->bios[i] = bio = bio_alloc(GFP_NOIO, cache->n_chunk_mult);
+		CHECK(rxbio->bios[i], out_free_bio,
+		      "couldn't allocate bio");
+
+		if (test_bit(Faulty, &stripe->units[i]->rdev->flags)) {
+			printk(KERN_INFO "raidxor: got a faulty drive"
+			       " during a request, skipping for now");
+			goto out_free_bio;
+		}
+
+		bio->bi_rw = READ;
+		bio->bi_private = rxbio;
+		bio->bi_bdev = stripe->units[i]->rdev->bdev;
+		bio->bi_end_io = raidxor_end_load_line;
+		bio->bi_sector = 42;
+		bio->bi_size = n_chunk_mult * PAGE_SIZE;
+
+		/* assign page */
+		bio->bi_vcnt = n_chunk_mult;
+		for (j = 0; j < n_chunk_mult; ++j) {
+			k = i * n_chunk_mult + j;
+			bio->bi_io_vec[k].bv_page = line->buffers[k];
+			bio->bi_io_vec[k].bv_len = PAGE_SIZE;
+			bio->bi_io_vec[k].bv_offset = 0;
+		}
+	}
+	/* generic_make_request */
+out_free_bio:
+	kfree(rxbio);
+out:
+	/* bio_error the listed requests */
+	return;
+}
+
+static void raidxor_end_load_line(struct bio *bio, int error)
+{
+	raidxor_bio_t *rxbio = (raidxor_bio_t *)(bio->bi_private);
+
+	/* set faulty bit on that device and inform the thread to take
+	   action */
+	//bio_io_error(rxbio->master_bio);
+}
+
+static void raidxor_cache_writeback_line(cache_t *cache, unsigned int n)
+{
+	cache_line_t *line;
+	disk_info_t *unit;
+	stripe_t *stripe;
+	sector_t actual_sector;
+	raidxor_bio_t *rxbio;
+	raidxor_conf_t *conf = cache->conf;
+
+	CHECK(cache, out, "no cache");
+	CHECK(n < cache->n_lines, out, "n not inside number of lines");
+
+	line = &cache->lines[n];
+	CHECK(line->flags == CACHE_LINE_DIRTY, out, "line not in dirty state");
+
+	stripe = raidxor_sector_to_stripe(conf, line->sector,
+					  &actual_sector);
+	CHECK(stripe, out, "no stripe found");
+
+	rxbio = raidxor_alloc_bio(stripe->n_units);
+	CHECK(rxbio, out, "couldn't allocate raidxor_bio_t");
+
+	/* rxbio */
+	/* for (i = 0; i < nbios; ++i) */
+	/* generic_make_request */
+out:
+	return;
 }
 
 /*
@@ -743,10 +868,12 @@ static void raidxor_abort_request(raidxor_bio_t *rxbio, struct bio *bio,
 	
 	/* only record error if we didn't already have one; we don't care
 	   about the previous value */
+#if 0
 	(void) atomic_cmpxchg(&rxbio->status, RAIDXOR_BIO_STATUS_NORMAL,
 			      error);
+#endif
 }
-
+#if 0
 static void raidxor_end_write_request(struct bio *bio, int error)
 {
 	raidxor_bio_t *rxbio = (raidxor_bio_t *)(bio->bi_private);
@@ -829,7 +956,7 @@ out:
 		bio_endio(mbio, atomic_read(&rxbio->status));
 	}
 }
-
+#endif
 static void raidxor_copy_bio(struct bio *bioto, struct bio *biofrom)
 {
 	unsigned long i;
@@ -1295,7 +1422,7 @@ static void raidxor_compute_length_and_pages(stripe_t *stripe,
 	*length = tmp;
 	*npages = tmp / PAGE_SIZE;
 }
-
+#if 0
 /**
  * raidxor_prepare_write_bio() - build several bios from one request
  *
@@ -1522,7 +1649,7 @@ out_free_pages:
 	bio_io_error(mbio);
 	return 1;
 }
-
+#endif
 /**
  * raidxord() - daemon thread
  *
@@ -1531,41 +1658,18 @@ out_free_pages:
 static void raidxord(mddev_t *mddev)
 {
 	raidxor_conf_t *conf = mddev_to_conf(mddev);
-	raidxor_bio_t *rxbio;
-	unsigned long i, handled = 0;
+	raidxor_request_t *request;
+	struct bio *bio;
+	unsigned long handled = 0;
 
+	/* someone poked us.  see what we can do */
 	printk(KERN_INFO "raidxor: raidxord active\n");
 
 	spin_lock(&conf->device_lock);
-	for (; !list_empty(&conf->request_list);) {
-		rxbio = list_entry(conf->request_list.next, typeof(*rxbio), lru);
-		list_del_init(&rxbio->lru);
-
-		if (bio_data_dir(rxbio->master_bio) == READ) {
-			if (raidxor_prepare_read_bio(conf, rxbio)) {
-				printk(KERN_INFO "raidxor: unfinished read"
-				       " request aborted\n");
-				continue;
-			}
-		}
-		else {
-			if (raidxor_prepare_write_bio(conf, rxbio)) {
-				printk(KERN_INFO "raidxor: unfinished write"
-				       " request aborted\n");
-				continue;
-			}
-		}
-
-		spin_unlock(&conf->device_lock);
-		/* commit the requests */
-		for (i = 0; i < rxbio->n_bios; ++i)
-			if (rxbio->bios[i]) {
-				/* only used for md driver housekeeping */
-				md_write_start(mddev, rxbio->bios[i]);
-				generic_make_request(rxbio->bios[i]);
-			}
-		++handled;
-		spin_lock(&conf->device_lock);
+	for (; conf->status == RAIDXOR_CONF_STATUS_NORMAL;) {
+		/* go through all cache lines, see if anything can be done */
+		/* if the target device is faulty, start repair if possible,
+		   else signal an error on that request */
 	}
 	spin_unlock(&conf->device_lock);
 
@@ -1633,9 +1737,6 @@ static int raidxor_run(mddev_t *mddev)
 	spin_lock_init(&conf->device_lock);
 	mddev->queue->queue_lock = &conf->device_lock;
 
-	INIT_LIST_HEAD(&conf->handle_list);
-	INIT_LIST_HEAD(&conf->request_list);
-
 	size = -1; /* rdev->size is in sectors, that is 1024 byte */
 
 	i = conf->n_units - 1;
@@ -1653,8 +1754,8 @@ static int raidxor_run(mddev_t *mddev)
 	if (size == -1)
 		goto out_free_conf;
 
-	printk(KERN_INFO "raidxor: used component size: %llu\n",
-	       size & ~(conf->chunk_size / 1024 - 1));
+	printk(KERN_INFO "raidxor: used component size: %llu sectors\n",
+	       (unsigned long long) size & ~(conf->chunk_size / 1024 - 1));
 
 	/* used component size in sectors, multiple of chunk_size ... */
 	mddev->size = size & ~(conf->chunk_size / 1024 - 1);
@@ -1808,7 +1909,7 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 	mddev_t *mddev = q->queuedata;
 	raidxor_conf_t *conf = mddev_to_conf(mddev);
 	const int rw = bio_data_dir(bio);
-	raidxor_bio_t *rxbio;
+	raidxor_request_t *request;
 	stripe_t *stripe;
 	sector_t newsector;
 	struct bio_pair *split;
@@ -1821,11 +1922,11 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 
 	stripe = raidxor_sector_to_stripe(conf, bio->bi_sector, &newsector);
 
-	goto out;
+	goto out_unlock;
 
 	if (raidxor_bio_maybe_split_boundary(stripe, bio, newsector, &split)) {
 		if (!split)
-			goto out;
+			goto out_unlock;
 
 		generic_make_request(&split->bio1);
 		generic_make_request(&split->bio2);
@@ -1834,18 +1935,9 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 		return 0;
 	}
 
-	rxbio = kzalloc(sizeof(raidxor_bio_t) +
-			sizeof(struct bio *) * conf->n_resources, GFP_NOIO);
-	if (!rxbio)
-		goto out;
+	/* if no line is available, wait for it ... */
+	/* pack the request somewhere in the cache */
 
-	rxbio->master_bio = bio;
-	rxbio->mddev = mddev;
-	rxbio->stripe = stripe;
-	rxbio->sector = newsector;
-	atomic_set(&rxbio->status, RAIDXOR_BIO_STATUS_NORMAL);
-
-	list_add_tail(&rxbio->lru, &conf->request_list);
 	md_wakeup_thread(conf->mddev->thread);
 	});
 
@@ -1854,8 +1946,9 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 
 	return 0;
 
-out:
+out_unlock:
 UNLOCKCONF(conf);
+/* out: */
 	bio_io_error(bio);
 	return 0;
 }

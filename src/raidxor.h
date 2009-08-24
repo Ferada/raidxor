@@ -16,20 +16,21 @@ typedef struct stripe stripe_t;
 typedef struct raidxor_resource resource_t;
 typedef struct cache cache_t;
 typedef struct cache_line cache_line_t;
-
+typedef struct raidxor_request raidxor_request_t;
 
 
 /**
  * struct cache_line - buffers multiple blocks over a stripe
  * @flags: current status of the line
  * @sector: index into the virtual device
+ * @waiting: waiting requests
  * @buffers: actual data
  */
 struct cache_line {
 	unsigned int flags;
 	sector_t sector;
 
-  
+	struct bio *waiting;
 
 	struct page *buffers[0];
 };
@@ -38,12 +39,15 @@ struct cache_line {
 
 /**
  * struct cache - groups access to the individual cache lines
+ * @n_lines: number of lines
+ * @n_buffers: number of actual buffers in each line
+ * @n_chunk_mult: number of buffers per chunk
  *
  * device_lock needs to be hold when accessing the cache.
  */
 struct cache {
 	raidxor_conf_t *conf;
-	unsigned int n_lines, n_buffers;
+	unsigned int n_lines, n_buffers, n_chunk_mult;
 
 	cache_line_t lines[0];
 };
@@ -56,7 +60,8 @@ struct cache {
 #define CACHE_LINE_WRITEBACK 5
 #define CACHE_LINE_ERROR     6
 
-static cache_t * allocate_cache(unsigned int n_lines, unsigned int n_buffers);
+static cache_t * raidxor_alloc_cache(unsigned int n_lines, unsigned int n_buffers,
+				     unsigned int n_chunk_mult);
 
 /*
    Life cycle of a cache line:
@@ -212,6 +217,9 @@ struct stripe {
 	disk_info_t *units[0];
 };
 
+static stripe_t * raidxor_sector_to_stripe(raidxor_conf_t *conf,
+					   sector_t sector,
+					   sector_t *newsector);
 
 
 /**
@@ -220,7 +228,7 @@ struct stripe {
  * @device_lock: lock for exclusive access to this raid
  * @status: one of RAIDXOR_CONF_STATUS_{NORMAL,INCOMPLETE,ERROR}
  * @chunk_size: copied from mddev_t, in bytes
- * @handle_list: requests needing handling
+ * @waiting_list: requests to be queued into the cache
  * @configured: is 1 if we have all necessary information
  * @units_per_resource: the number of units per resource
  * @n_resources: the number of resources
@@ -240,9 +248,6 @@ struct raidxor_conf {
 
 	unsigned long chunk_size;
 	sector_t stripe_size;
-
-	struct list_head request_list;
-	struct list_head handle_list;
 
 	cache_t *cache;
 
@@ -280,22 +285,16 @@ struct raidxor_conf {
 
 /**
  * struct raidxor_bio - private information for bio transfers from and to stripes
- * @status: one of RAIDXOR_BIO_STATUS_{NORMAL,ERROR}
  * @remaining: the number of remaining transfers
  * @mddev: the raid device
  * @stripe: the stripe this bio is transfering from or to
  * @sector: the virtual sector address inside that stripe
  * @unit: extra information from raidxor
- * @master_bio: the bio which was sent to the raid device
  * @bios: the bios to the individual units
  *
  * If remaining reaches zero, the whole transfer is finished.
  */
 struct raidxor_bio {
-	struct list_head lru;
-
-	atomic_t status;
-
 	atomic_t remaining;
 	mddev_t *mddev;
 
@@ -303,13 +302,16 @@ struct raidxor_bio {
 	sector_t sector;
 	unsigned long length;
 
-	/* original bio going to /dev/mdX */
-	struct bio *master_bio;
-
 	unsigned long n_bios;
 	struct bio *bios[0];
 };
 
-#define RAIDXOR_BIO_STATUS_NORMAL 0
+#define CHECK_LEVEL KERN_EMERG
+#define CHECK(pointer,label,message) \
+	if (!(pointer)) { \
+		printk(CHECK_LEVEL "%s:%u:raidxor: check failed: %s\n", \
+		       __FILE__, __LINE__, message); \
+		goto label; \
+	}
 
 #endif
