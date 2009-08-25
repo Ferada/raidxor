@@ -1,3 +1,5 @@
+/* -*- mode: c; coding: utf-8; c-file-style: K&R; tab-width: 8; indent-tabs-mode: t; c-basic-offset: 8; -*- */
+
 /**
  * raidxor_try_configure_raid() - configures the raid
  *

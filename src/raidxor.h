@@ -1,3 +1,5 @@
+/* -*- mode: c; coding: utf-8; c-file-style: K&R; tab-width: 8; indent-tabs-mode: t; c-basic-offset: 8; -*- */
+
 #ifndef _RAIDXOR_H
 #define _RAIDXOR_H
 
