@@ -21,7 +21,7 @@ typedef struct raidxor_request raidxor_request_t;
 /**
  * struct cache_line - buffers multiple blocks over a stripe
  * @flags: current status of the line
- * @sector: index into the virtual device
+ * @virtual_sector: index into the virtual device
  * @waiting: waiting requests
  * @buffers: actual data
  */
@@ -238,6 +238,12 @@ struct stripe {
 };
 
 #define STRIPE_FAULTY 1
+#define STRIPE_ERROR 2
+
+/*
+  STRIPE_FAULTY: we have a correctable error
+  STRIPE_ERROR: no chance of recovery
+ */
 
 static stripe_t * raidxor_sector_to_stripe(raidxor_conf_t *conf,
 					   sector_t sector,

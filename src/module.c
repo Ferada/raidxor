@@ -16,6 +16,7 @@
 
 static int raidxor_cache_make_clean(cache_t *cache, unsigned int line)
 {
+#undef CHECK_RETURN_VALUE
 #define CHECK_RETURN_VALUE 1
 	CHECK_ARG_RET_VAL(cache);
 	CHECK_PLAIN_RET_VAL(line < cache->n_lines);
@@ -102,6 +103,7 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 	stripe = raidxor_sector_to_stripe(conf, line->sector,
 					  &actual_sector);
 	CHECK_PLAIN(stripe);
+	CHECK_PLAIN(!test_bit(STRIPE_ERROR, &stripe->flags));
 	
 	rxbio = raidxor_alloc_bio(stripe->n_units);
 	CHECK_PLAIN(rxbio);
@@ -499,8 +501,8 @@ static void raidxor_error(mddev_t *mddev, mdk_rdev_t *rdev)
 		set_bit(Faulty, &rdev->flags);
 		set_bit(STRIPE_FAULTY, &unit->stripe->flags);
 		set_bit(CONF_FAULTY, &conf->flags);
-		printk(KERN_ALERT "raidxor: disk failure on %s, disabling"
-		       " device\n", bdevname(rdev->bdev, buffer));
+		printk(KERN_ALERT "raidxor: disk failure on %s\n",
+		       bdevname(rdev->bdev, buffer));
 	}
 	});
 }
@@ -691,9 +693,6 @@ static void raidxord(mddev_t *mddev)
 		if (cache->n_waiting > 0)
 			raidxor_finish_lines(cache);
 
-		/* if the target device is faulty, start repair if possible,
-		   else signal an error on that request */
-
 		/* give others the chance to do something */
 		UNLOCKCONF(conf);
 		LOCKCONF(conf);
@@ -864,19 +863,17 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 	mddev_t *mddev = q->queuedata;
 	raidxor_conf_t *conf = mddev_to_conf(mddev);
 	stripe_t *stripe;
-	sector_t newsector;
 	struct bio_pair *split;
+	unsigned int line;
+	cache_t *cache;
 
 	printk(KERN_EMERG "raidxor: got request\n");
-
-	printk(KERN_EMERG "raidxor: sector_to_stripe(conf, %llu, &newsector) called\n",
-	       (unsigned long long) bio->bi_sector);
 
 	WITHLOCKCONF(conf, {
 #undef CHECK_JUMP_LABEL
 #define CHECK_JUMP_LABEL out_unlock
 
-	stripe = raidxor_sector_to_stripe(conf, bio->bi_sector, &newsector);
+	stripe = raidxor_sector_to_stripe(conf, bio->bi_sector, NULL);
 	CHECK_PLAIN(stripe);
 
 #if 0
@@ -892,8 +889,27 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 	}
 #endif
 
-	/* if no line is available, wait for it ... */
+	/* look for matching line or otherwise available */
+	if (!raidxor_cache_find_line(cache, bio->bi_sector, &line)) {
+		/* if it's not in the cache and the stripe is flagged as error,
+		   abort early, as we can do nothing */
+		if (test_bit(STRIPE_ERROR, &stripe->flags))
+			goto out_unlock;
+
+		/* TODO: else if no line is available, wait for it ... */
+		++cache->n_waiting;
+		cache->wait_for_line;
+		/* TODO: detect CONF_STOPPING and a cache full with errors */
+	}
+
+	if (cache->lines[line].status == CACHE_LINE_CLEAN ||
+	    cache->lines[line].status == CACHE_LINE_READY)
+	{
+		raidxor_cache_make_ready(cache, line);
+		cache->lines[line].sector = bio->bi_sector;
+	}
 	/* pack the request somewhere in the cache */
+	raidxor_cache_add_request(cache, line, bio);
 	});
 
 	raidxor_wakeup_thread(conf);

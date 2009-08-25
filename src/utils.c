@@ -477,6 +477,40 @@ static struct bio * raidxor_cache_remove_request(cache_t *cache,
 	return result;
 }
 
+/**
+ * raidxor_cache_find_line() - finds a matching or otherwise available line
+ *
+ * Returns 1 if we've found a line, else 0.
+ */
+static int raidxor_cache_find_line(cache_t *cache, sector_t sector,
+				   unsigned int *line)
+{
+	unsigned int i;
+
+#undef CHECK_RETURN_VALUE
+#define CHECK_RETURN_VALUE 0
+	CHECK_ARG_RET_VAL(cache);
+
+	/* find an exact match */
+	for (i = 0; i < cache->n_lines; ++i) {
+		if (sector == cache->lines[i].sector) {
+			if (line)
+				*line = i;
+			return 1;
+		}
+	}
+
+	for (i = 0; i < cache->n_lines; ++i) {
+		if (cache->lines[i].status == CACHE_LINE_CLEAN)
+			return i;
+		else if (cache->lines[i].status == CACHE_LINE_READY &&
+			 !cache->lines[i].waiting)
+			return i;
+	}
+
+	return 0;
+}
+
 #if 0
 Local variables:
 c-basic-offset: 8
