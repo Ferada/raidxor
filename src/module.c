@@ -589,6 +589,7 @@ static void raidxor_finish_lines(cache_t *cache)
 static void raidxor_handle_requests(cache_t *cache, unsigned int n_line)
 {
 	cache_line_t *line;
+	struct bio *bio;
 
 	CHECK_ARG_RET(cache);
 	CHECK_PLAIN_RET(n_line < cache->n_lines);
@@ -596,9 +597,17 @@ static void raidxor_handle_requests(cache_t *cache, unsigned int n_line)
 	line = &cache->lines[n_line];
 	CHECK_PLAIN_RET(line);
 
-	if (!line->waiting) return;
-
 	/* requests are added at back, so take from front and handle */
+	while ((bio = raidxor_cache_remove_request(cache, n_line))) {
+		/* TODO: copy data around */
+
+		/* mark dirty */
+		if (bio_data_dir(bio) == WRITE &&
+		    cache->lines[n_line].status == CACHE_LINE_UPTODATE)
+		{
+			cache->lines[n_line].status = CACHE_LINE_DIRTY;
+		}
+	}
 }
 
 /**
@@ -631,6 +640,7 @@ static int raidxor_handle_line(cache_t *cache, unsigned int n_line)
 		goto out_done_something;
 	case CACHE_LINE_UPTODATE:
 	case CACHE_LINE_DIRTY:
+	case CACHE_LINE_ERROR:
 		raidxor_handle_requests(cache, n_line);
 		goto out_done_something;
 	case CACHE_LINE_RECOVERY:
@@ -639,8 +649,7 @@ static int raidxor_handle_line(cache_t *cache, unsigned int n_line)
 		/* no bugs, just can't do anything */
 		break;
 	case CACHE_LINE_CLEAN:
-	case CACHE_LINE_ERROR:
-		/* bugs, so log them */
+		/* bug, so log it */
 		CHECK_BUG("wrong line status, can't do anything about it");
 		break;
 		/* no default */
