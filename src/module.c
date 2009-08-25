@@ -71,6 +71,8 @@ static void raidxor_cache_recover(cache_t *cache, unsigned int n_line)
 
 #if 0
 	if (!/* TODO: we have the equations */) return;
+#else
+	return;
 #endif
 
 	cache->lines[n_line].status = CACHE_LINE_RECOVERY;
@@ -129,6 +131,7 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 		bio->bi_private = rxbio;
 		bio->bi_bdev = stripe->units[i]->rdev->bdev;
 		bio->bi_end_io = raidxor_end_load_line;
+		/* TODO: correct sector */
 		bio->bi_sector = 42;
 		bio->bi_size = n_chunk_mult * PAGE_SIZE;
 
@@ -200,6 +203,7 @@ static int raidxor_cache_writeback_line(cache_t *cache, unsigned int n)
 		bio->bi_private = rxbio;
 		bio->bi_bdev = stripe->units[i]->rdev->bdev;
 		bio->bi_end_io = raidxor_end_writeback_line;
+		/* TODO: correct sector */
 		bio->bi_sector = 42;
 		bio->bi_size = n_chunk_mult * PAGE_SIZE;
 
@@ -331,9 +335,6 @@ static void raidxor_end_writeback_line(struct bio *bio, int error)
 
 		md_error(conf->mddev, unit->rdev);
 	error_no_unit: __attribute__((unused)) {}
-	}
-	else {
-		/* TODO: copy data around */
 	}
 
 	WITHLOCKCONF(conf, {
@@ -600,6 +601,8 @@ static void raidxor_handle_requests(cache_t *cache, unsigned int n_line)
 	/* requests are added at back, so take from front and handle */
 	while ((bio = raidxor_cache_remove_request(cache, n_line))) {
 		/* TODO: copy data around */
+
+		bio_endio(bio, 0);
 
 		/* mark dirty */
 		if (bio_data_dir(bio) == WRITE &&

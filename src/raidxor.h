@@ -36,6 +36,7 @@ struct cache_line {
 
 /**
  * struct cache - groups access to the individual cache lines
+ * @active_lines: number of currently active read/write activities
  * @n_lines: number of lines
  * @n_buffers: number of actual buffers in each line
  * @n_chunk_mult: number of buffers per chunk
