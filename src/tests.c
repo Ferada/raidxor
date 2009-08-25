@@ -1,4 +1,4 @@
-/* -*- mode: c; coding: utf-8; c-file-style: "K&R"; tab-width: 8; indent-tabs-mode: t; c-basic-offset: 8; -*- */
+/* -*- mode: c; coding: utf-8; c-file-style: "K&R"; tab-width: 8; indent-tabs-mode: t; -*- */
 
 /**
  * raidxor_fill_page() - fills page with a value
@@ -386,3 +386,9 @@ static int raidxor_run_test_cases(void)
 	printk(KERN_INFO "raidxor: test cases run successfully\n");
 	return 0;
 }
+
+#if 0
+Local variables:
+c-basic-offset: 8
+End:
+#endif

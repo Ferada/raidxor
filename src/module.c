@@ -1,4 +1,4 @@
-/* -*- mode: c; coding: utf-8; c-file-style: "K&R"; tab-width: 8; indent-tabs-mode: t; c-basic-offset: 8; -*- */
+/* -*- mode: c; coding: utf-8; c-file-style: "K&R"; tab-width: 8; indent-tabs-mode: t; -*- */
 
 #include <linux/version.h>
 #include <linux/module.h>
@@ -625,6 +625,18 @@ static int raidxor_stop(mddev_t *mddev)
 	return 0;
 }
 
+/**
+ * raidxor_wakeup_thread() - wakes the associated kernel thread
+ *
+ * Whenever we need something done, this will (re-)start the kernel thread
+ * (see raidxord()).
+ */
+static void raidxor_wakeup_thread(raidxor_conf_t *conf)
+{
+     
+     md_wakeup_thread(conf->mddev->thread);
+}
+
 static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 {
 	mddev_t *mddev = q->queuedata;
@@ -663,13 +675,9 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 	/* pack the request somewhere in the cache */
 	});
 
-	md_wakeup_thread(conf->mddev->thread);
-
-	printk(KERN_INFO "raidxor: handling %s request\n",
-	       (rw == READ) ? "read" : "write");
+	raidxor_wakeup_thread(conf);
 
 	return 0;
-
 out_unlock: __attribute__((unused))
 	UNLOCKCONF(conf);
 /* out: */
@@ -678,3 +686,9 @@ out_unlock: __attribute__((unused))
 }
 
 #include "init.c"
+
+#if 0
+Local variables:
+c-basic-offset: 8
+End:
+#endif

@@ -1,4 +1,4 @@
-/* -*- mode: c; coding: utf-8; c-file-style: "K&R"; tab-width: 8; indent-tabs-mode: t; c-basic-offset: 8; -*- */
+/* -*- mode: c; coding: utf-8; c-file-style: "K&R"; tab-width: 8; indent-tabs-mode: t; -*- */
 
 #ifndef _RAIDXOR_H
 #define _RAIDXOR_H
@@ -385,4 +385,10 @@ struct raidxor_bio {
 #define CHECK_ALLOC_RET_NULL(var) \
 	CHECK_RET_NULL(var, CHECK_ALLOC_MESSAGE #var)
 
+#endif
+
+#if 0
+Local variables:
+c-basic-offset: 8
+End:
 #endif

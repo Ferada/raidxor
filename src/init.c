@@ -1,4 +1,4 @@
-/* -*- mode: c; coding: utf-8; c-file-style: "K&R"; tab-width: 8; indent-tabs-mode: t; c-basic-offset: 8; -*- */
+/* -*- mode: c; coding: utf-8; c-file-style: "K&R"; tab-width: 8; indent-tabs-mode: t; -*- */
 
 #ifdef RAIDXOR_RUN_TESTCASES
 #include "tests.c"
@@ -44,3 +44,9 @@ MODULE_DESCRIPTION("Raid module with parameterisation support for en- and decodi
 
 module_init( raidxor_init );
 module_exit( raidxor_exit );
+
+#if 0
+Local variables:
+c-basic-offset: 8
+End:
+#endif

@@ -1,4 +1,4 @@
-/* -*- mode: c; coding: utf-8; c-file-style: "K&R"; tab-width: 8; indent-tabs-mode: t; c-basic-offset: 8; -*- */
+/* -*- mode: c; coding: utf-8; c-file-style: "K&R"; tab-width: 8; indent-tabs-mode: t; -*- */
 
 /**
  * raidxor_try_configure_raid() - configures the raid
@@ -344,3 +344,9 @@ static void raidxor_status(struct seq_file *seq, mddev_t *mddev)
 	seq_printf(seq, " I'm feeling fine");
 	return;
 }
+
+#if 0
+Local variables:
+c-basic-offset: 8
+End:
+#endif

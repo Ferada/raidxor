@@ -1,4 +1,4 @@
-/* -*- mode: c; coding: utf-8; c-file-style: "K&R"; tab-width: 8; indent-tabs-mode: t; c-basic-offset: 8; -*- */
+/* -*- mode: c; coding: utf-8; c-file-style: "K&R"; tab-width: 8; indent-tabs-mode: t; -*- */
 
 /**
  * raidxor_find_bio() - searches for the corresponding bio for a single unit
@@ -423,3 +423,9 @@ static int raidxor_bio_maybe_split_boundary(stripe_t *stripe, struct bio *bio,
 	}
 	return 0;
 }
+
+#if 0
+Local variables:
+c-basic-offset: 8
+End:
+#endif
