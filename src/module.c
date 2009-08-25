@@ -60,7 +60,23 @@ out_free_pages:
  */
 static void raidxor_cache_recover(cache_t *cache, unsigned int n_line)
 {
-	
+	raidxor_conf_t *conf;
+
+	CHECK_ARG_RET(cache);
+	CHECK_PLAIN_RET(n_line < cache->n_lines);
+
+	conf = cache->conf;
+	CHECK_PLAIN_RET(conf);
+
+#if 0
+	if (!/* TODO: we have the equations */) return;
+#endif
+
+	cache->lines[n_line].status = CACHE_LINE_RECOVERY;
+
+	/* TODO: do the recovery */
+
+	cache->lines[n_line].status = CACHE_LINE_UPTODATE;
 }
 
 static void raidxor_end_load_line(struct bio *bio, int error);
@@ -250,8 +266,7 @@ static void raidxor_end_load_line(struct bio *bio, int error)
 		CHECK_PLAIN(unit);
 
 		md_error(conf->mddev, unit->rdev);
-	error_no_unit: __attribute__((unused))
-		{}
+	error_no_unit: __attribute__((unused)) {}
 	}
 	else {
 		/* TODO: copy data around */
@@ -304,7 +319,6 @@ static void raidxor_end_writeback_line(struct bio *bio, int error)
 	CHECK_PLAIN_RET(stripe);
 
 	if (error) {
-		/* TODO: set faulty bit on that device */
 		WITHLOCKCONF(conf, {
 		line->status = CACHE_LINE_ERROR;
 		unit = raidxor_find_unit_bio(stripe, bio);
@@ -314,8 +328,7 @@ static void raidxor_end_writeback_line(struct bio *bio, int error)
 		CHECK_PLAIN(unit);
 
 		md_error(conf->mddev, unit->rdev);
-	error_no_unit: __attribute__((unused))
-		{}
+	error_no_unit: __attribute__((unused)) {}
 	}
 	else {
 		/* TODO: copy data around */

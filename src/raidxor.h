@@ -8,8 +8,6 @@
 /* new raid level e.g. for mdadm */
 #define LEVEL_XOR (-10)
 
-
-
 typedef struct disk_info disk_info_t;
 typedef struct encoding encoding_t;
 typedef struct raidxor_bio raidxor_bio_t;
@@ -19,7 +17,6 @@ typedef struct raidxor_resource resource_t;
 typedef struct cache cache_t;
 typedef struct cache_line cache_line_t;
 typedef struct raidxor_request raidxor_request_t;
-
 
 /**
  * struct cache_line - buffers multiple blocks over a stripe
@@ -36,8 +33,6 @@ struct cache_line {
 
 	struct page *buffers[0];
 };
-
-
 
 /**
  * struct cache - groups access to the individual cache lines

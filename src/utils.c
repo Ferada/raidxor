@@ -427,6 +427,56 @@ static int raidxor_bio_maybe_split_boundary(stripe_t *stripe, struct bio *bio,
 	return 0;
 }
 
+/**
+ * raidxor_cache_add_request() - adds request at back
+ */
+static void raidxor_cache_add_request(cache_t *cache, unsigned int n_line,
+				      struct bio *bio)
+{
+	cache_line_t *line;
+	struct bio *previous;
+	CHECK_ARG_RET(cache);
+	CHECK_ARG_RET(bio);
+	CHECK_PLAIN_RET(n_line < cache->n_lines);
+
+	line = &cache->lines[n_line];
+	CHECK_PLAIN_RET(line);
+
+	previous = line->waiting;
+	if (!previous) {
+		line->waiting = bio;
+	}
+	else {
+		while (previous->bi_next) {
+			previous = previous->bi_next;
+		}
+
+		previous->bi_next = bio;
+	}
+}
+
+/**
+ * raidxor_cache_remove_request() - pops request from front
+ */
+static struct bio * raidxor_cache_remove_request(cache_t *cache,
+						 unsigned int n_line)
+{
+	struct bio *result;
+	cache_line_t *line;
+	CHECK_ARG_RET_NULL(cache);
+	CHECK_PLAIN_RET_NULL(n_line < cache->n_lines);
+
+	line = &cache->lines[n_line];
+	CHECK_PLAIN_RET_NULL(line);
+
+	result = line->waiting;
+	if (result) {
+		line->waiting = result->bi_next;
+	}
+
+	return result;
+}
+
 #if 0
 Local variables:
 c-basic-offset: 8
