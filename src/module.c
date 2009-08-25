@@ -453,30 +453,141 @@ static void raidxor_compute_length_and_pages(stripe_t *stripe,
 }
 
 /**
+ * raidxor_finish_lines() - tries to free some lines by writeback or dropping
+ *
+ */
+static void raidxor_finish_lines(cache_t *cache)
+{
+	unsigned int i;
+	cache_line_t *line;
+	unsigned int freed = 0;
+
+	CHECK_ARG_RET(cache);
+	CHECK_PLAIN_RET(cache->n_waiting > 0);
+	CHECK_PLAIN_RET(cache->n_lines > 0);
+
+	/* as long as there are more waiting slots than now free'd slots */
+	for (i = 0; i < cache->n_lines && freed < cache->n_waiting; ++i) {
+		line = &cache->lines[i];
+		switch (line->status) {
+		case CACHE_LINE_READY:
+			if (line->waiting) break;
+			/* shouldn't happen, nobody is waiting for this one, */
+			++freed;
+			break;
+		case CACHE_LINE_CLEAN:
+			/* shouldn't happen, so we just signal here anyway */
+			printk(KERN_INFO "raidxor: got a clean line in"
+			       " raidxor_finish_lines\n");
+			++freed;
+			break;
+		case CACHE_LINE_UPTODATE:
+			raidxor_cache_drop_line(cache, i);
+			++freed;
+			break;
+		case CACHE_LINE_DIRTY:
+			/* when the callback is invoked, the main thread is
+			   waked up and eventually revisits this entry  */
+			raidxor_cache_writeback_line(cache, i);
+			break;
+		case CACHE_LINE_LOADING:
+		case CACHE_LINE_WRITEBACK:
+		case CACHE_LINE_ERROR:
+		case CACHE_LINE_FAULTY:
+		case CACHE_LINE_RECOVERY:
+			/* can't do anything useful with these */
+			break;
+			/* there is no default */
+		}
+	}
+
+	cache->n_waiting -= freed;
+	if (freed > 0) {
+		/* TODO: wakeup waiting processes */
+#if 0
+		wake_up(&cache->wait_for_line);
+#endif
+	}
+}
+
+/**
+ * raidxor_handle_line() - tries to do something with a cache line
+ *
+ * Returns 1 when we've done something, else 0.  Errors count as
+ * 'done nothing' to prevent endless looping in those cases.
+ */
+static int raidxor_handle_line(cache_t *cache, unsigned int n_line)
+{
+#undef CHECK_RETURN_VALUE
+#define CHECK_RETURN_VALUE 0
+	cache_line_t *line;
+
+	CHECK_ARG_RET_VAL(cache);
+	CHECK_PLAIN_RET_VAL(n_line < cache->n_lines);
+
+	line = &cache->lines[n_line];
+	CHECK_PLAIN_RET_VAL(line);
+
+	/* if nobody wants something from this line, do nothing */
+	if (!line->waiting) return 0;
+
+	
+
+	return 0;
+}
+
+/**
  * raidxord() - daemon thread
  *
  * Is started by the md level.  Takes requests from the queue and handles them.
  */
 static void raidxord(mddev_t *mddev)
 {
-	raidxor_conf_t *conf = mddev_to_conf(mddev);
-	unsigned long handled = 0;
+	unsigned int i;
+	raidxor_conf_t *conf;
+	cache_t *cache;
+	unsigned int handled = 0;
+	unsigned int done = 0;
+
+	CHECK_ARG_RET(mddev);
+
+	conf = mddev_to_conf(mddev);
+	CHECK_PLAIN_RET(conf);
+
+	cache = conf->cache;
+	CHECK_PLAIN_RET(cache);
 
 	/* someone poked us.  see what we can do */
 	printk(KERN_INFO "raidxor: raidxord active\n");
 
 	WITHLOCKCONF(conf, {
-	for (; !test_bit(CONF_STOPPING, &conf->flags);) {
-		/* go through all cache lines, see if anything can be done */
+	for (; !test_bit(CONF_STOPPING, &conf->flags) && !done;) {
+		/* go through all cache lines, see if any waiting requests
+		   can be handled */
+		for (i = 0, done = 1; i < cache->n_lines; ++i) {
+			/* only break if we have handled at least one line */
+			if (raidxor_handle_line(cache, i))
+				done = 0;
+		}
+
+		/* also, if somebody is waiting for a free line, try to make
+		   one (or more) available.  freeing some lines doesn't count
+		   for done above, so if we're done working on those lines
+		   and we free two lines afterwards, the waiting processes
+		   are notified and signal us back later on */
+		if (cache->n_waiting > 0)
+			raidxor_finish_lines(cache);
+
 		/* if the target device is faulty, start repair if possible,
 		   else signal an error on that request */
+
+		/* give others the chance to do something */
 		UNLOCKCONF(conf);
 		LOCKCONF(conf);
 	}
 	});
 
-	printk(KERN_INFO "raidxor: raidxord inactive, handled %lu requests\n",
-	       handled);
+	printk(KERN_INFO "raidxor: thread inactive, %u requests\n", handled);
 }
 
 /**
@@ -538,8 +649,6 @@ static int raidxor_run(mddev_t *mddev)
 
 	spin_lock_init(&conf->device_lock);
 	mddev->queue->queue_lock = &conf->device_lock;
-
-	init_waitqueue_head(&conf->wait_for_line);
 
 	size = -1; /* rdev->size is in sectors, that is 1024 byte */
 
@@ -641,7 +750,6 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 {
 	mddev_t *mddev = q->queuedata;
 	raidxor_conf_t *conf = mddev_to_conf(mddev);
-	const int rw = bio_data_dir(bio);
 	stripe_t *stripe;
 	sector_t newsector;
 	struct bio_pair *split;

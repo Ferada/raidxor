@@ -172,6 +172,9 @@ static cache_t * raidxor_alloc_cache(unsigned int n_lines, unsigned int n_buffer
 	cache->n_lines = n_lines;
 	cache->n_buffers = n_buffers;
 	cache->n_chunk_mult = n_chunk_mult;
+	cache->n_waiting = 0;
+
+	init_waitqueue_head(&cache->wait_for_line);
 
 	for (i = 0; i < n_lines; ++i)
 		cache->lines[i].status = CACHE_LINE_CLEAN;

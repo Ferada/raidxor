@@ -44,6 +44,8 @@ struct cache_line {
  * @n_lines: number of lines
  * @n_buffers: number of actual buffers in each line
  * @n_chunk_mult: number of buffers per chunk
+ * @n_waiting: number of processes waiting for a free line
+ * @wait_for_line: waitqueue so we're able to wait for the event above
  *
  * device_lock needs to be hold when accessing the cache.
  */
@@ -51,6 +53,9 @@ struct cache {
 	raidxor_conf_t *conf;
 	unsigned int active_lines;
 	unsigned int n_lines, n_buffers, n_chunk_mult;
+
+	unsigned int n_waiting;
+	wait_queue_head_t wait_for_line;
 
 	cache_line_t lines[0];
 };
@@ -63,6 +68,7 @@ struct cache {
 #define CACHE_LINE_WRITEBACK 5
 #define CACHE_LINE_ERROR     6
 #define CACHE_LINE_FAULTY    7
+#define CACHE_LINE_RECOVERY  8
 
 static cache_t * raidxor_alloc_cache(unsigned int n_lines, unsigned int n_buffers,
 				     unsigned int n_chunk_mult);
@@ -70,16 +76,15 @@ static cache_t * raidxor_alloc_cache(unsigned int n_lines, unsigned int n_buffer
 /*
    Life cycle of a cache line:
 
-                      ------------------------
-                     /           11           \
-                    v                          v
-   +=======+ 1 	+-------+ 2  +---------+ 9 +--------+
-   ¦ CLEAN ¦<==>| READY |<==>| LOADING |-->| FAULTY |
-   +=======+  	+-------+    +---------+   +--------+
-		  ^ 	     3	---           ---
-		  | 	 ------/-------------/  10
-                  |     /
-		 4|    /    	      +-------+
+                    /----------------------------------  12
+                   v                                   \
+   +=======+ 1 	+-------+ 2  +---------+ 9 +--------+   \
+   ¦ CLEAN ¦<==>| READY |<==>| LOADING |-->| FAULTY |    \
+   +=======+  	+-------+    +---------+   +--------+     |
+		  ^ 	     3	---          \  10        |
+		  | 	 ------/       11     --->+----------+
+                  |     /       \-----------------| RECOVERY |
+		 4|    /    	      +-------+   +----------+
                   |   v		      | ERROR |
                 +----------+	      +-------+
                 | UPTODATE |<-\ 7	  ^ 
@@ -98,10 +103,15 @@ static cache_t * raidxor_alloc_cache(unsigned int n_lines, unsigned int n_buffer
    6: start writeback process
    7: finishing writeback, data in cache and on device is now synchronised
    8: we couldn't finish writeback, just leave the data here
-   9: we couldn't read from one device, go here and start recovery
-  10: recovery finished, so we are done
-  11: recovery couldn't be finished, so drop all requests and drop back to
+   9: we couldn't read from one device, go here
+  10: start recovery if we have enough information
+  11: recovery finished, so we are done
+  12: recovery couldn't be finished, so drop all requests and drop back to
       a more usable state
+
+   during LOADING, RECOVERY and WRITEBACK, nothing is done in the handlers.
+   the transition from clean to ready is simply memory (de-)allocation, so
+   nothing fancy there.
 
    requests are limited to multiple of PAGE_SIZE bytes, so all we have to do,
    is to take these requests, scatter their data into the cache, and write
@@ -265,8 +275,6 @@ struct raidxor_conf {
 
 	unsigned long chunk_size;
 	sector_t stripe_size;
-
-	wait_queue_head_t wait_for_line;
 
 	cache_t *cache;
 
