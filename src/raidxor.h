@@ -323,7 +323,7 @@ struct raidxor_conf {
 struct raidxor_bio {
 	unsigned int remaining;
 	cache_t *cache;
-	cache_line_t *line;
+	unsigned int line;
 
 	stripe_t *stripe;
 	sector_t sector;
@@ -353,7 +353,7 @@ struct raidxor_bio {
 #define CHECK_ALLOC_MESSAGE "couldn't allocate "
 
 #define CHECK(test,message) \
-	CHECK_HELPER(test, goto (CHECK_JUMP_LABEL), message)
+	CHECK_HELPER(test, goto CHECK_JUMP_LABEL, message)
 #define CHECK_RET(test,message) \
 	CHECK_HELPER(test, return, message)
 #define CHECK_RET_VAL(test,message) \
@@ -392,6 +392,10 @@ struct raidxor_bio {
 	CHECK_RET_VAL(var, CHECK_ALLOC_MESSAGE #var)
 #define CHECK_ALLOC_RET_NULL(var) \
 	CHECK_RET_NULL(var, CHECK_ALLOC_MESSAGE #var)
+
+#define CHECK_BUG(message)					  \
+	printk(CHECK_LEVEL "raidxor: BUG at %s:%i: %s\n", \
+	       __FILE__, __LINE__, message)
 
 #endif
 

@@ -5,6 +5,8 @@
 #include <linux/init.h>
 #include <asm/div64.h>
 
+#define DEBUG
+
 #include "raidxor.h"
 
 #include "utils.c"
@@ -50,6 +52,17 @@ out_free_pages:
 	return 1;
 }
 
+/**
+ * raidxor_cache_recover() - tries to recover a cache line
+ *
+ * Since the read buffers are available, we can use them to calculate
+ * the missing data.
+ */
+static void raidxor_cache_recover(cache_t *cache, unsigned int n_line)
+{
+	
+}
+
 static void raidxor_end_load_line(struct bio *bio, int error);
 static void raidxor_end_writeback_line(struct bio *bio, int error);
 
@@ -68,7 +81,7 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 	CHECK_PLAIN(n < cache->n_lines);
 
 	line = &cache->lines[n];
-	CHECK_PLAIN(line->flags == CACHE_LINE_READY);
+	CHECK_PLAIN(line->status == CACHE_LINE_READY);
 
 	stripe = raidxor_sector_to_stripe(conf, line->sector,
 					  &actual_sector);
@@ -141,7 +154,7 @@ static int raidxor_cache_writeback_line(cache_t *cache, unsigned int n)
 	CHECK_PLAIN(n < cache->n_lines);
 
 	line = &cache->lines[n];
-	CHECK_PLAIN(line->flags == CACHE_LINE_DIRTY);
+	CHECK_PLAIN(line->status == CACHE_LINE_DIRTY);
 
 	stripe = raidxor_sector_to_stripe(conf, line->sector,
 					  &actual_sector);
@@ -204,36 +217,54 @@ out: __attribute__((unused))
 static void raidxor_end_load_line(struct bio *bio, int error)
 {
 #undef CHECK_JUMP_LABEL
-#define CHECK_JUMP_LABEL error
+#define CHECK_JUMP_LABEL out
 	disk_info_t *unit;
-	raidxor_bio_t *rxbio = (raidxor_bio_t *)(bio->bi_private);
-	raidxor_conf_t *conf = rxbio->cache->conf;
+	raidxor_bio_t *rxbio;
+	raidxor_conf_t *conf;
+	cache_t *cache;
+	cache_line_t *line;
 
 	CHECK_ARG_RET(bio);
 
+	rxbio = (raidxor_bio_t *)(bio->bi_private);
+	CHECK_PLAIN_RET(rxbio);
+
+	cache = rxbio->cache;
+	CHECK_PLAIN_RET(cache);
+
+	CHECK_PLAIN_RET(rxbio->line < cache->n_lines);
+
+	line = &cache->lines[rxbio->line];
+	CHECK_PLAIN_RET(line);
+
+	conf = rxbio->cache->conf;
+	CHECK_PLAIN_RET(conf);
+
 	if (error) {
-		WITHLOCKCONF(rxbio->cache->conf, {
-		rxbio->line->status = CACHE_LINE_FAULTY;
+		WITHLOCKCONF(conf, {
+		line->status = CACHE_LINE_FAULTY;
 		unit = raidxor_find_unit_bio(rxbio->stripe, bio);
 		});
+#undef CHECK_JUMP_LABEL
+#define CHECK_JUMP_LABEL error_no_unit
 		CHECK_PLAIN(unit);
 
 		md_error(conf->mddev, unit->rdev);
-
-		
+	error_no_unit: __attribute__((unused))
+		{}
 	}
 	else {
 		/* TODO: copy data around */
 	}
 
-error: __attribute__((unused))
-	WITHLOCKCONF(rxbio->cache->conf, {
+	WITHLOCKCONF(conf, {
 	if ((--rxbio->remaining) == 0) {
-		if (rxbio->line->status == CACHE_LINE_LOADING) {
-			rxbio->line->status = CACHE_LINE_UPTODATE;
+		if (line->status == CACHE_LINE_LOADING) {
+			line->status = CACHE_LINE_UPTODATE;
 		}
-		else if (rxbio->line->status == CACHE_LINE_FAULTY) {
+		else if (line->status == CACHE_LINE_FAULTY) {
 			/* TODO: try starting recovery */
+			raidxor_cache_recover(cache, rxbio->line);
 		}
 		--rxbio->cache->active_lines;
 		/* TODO: wake up waiting threads */
@@ -245,31 +276,56 @@ error: __attribute__((unused))
 static void raidxor_end_writeback_line(struct bio *bio, int error)
 {
 #undef CHECK_JUMP_LABEL
-#define CHECK_JUMP_LABEL error
+#define CHECK_JUMP_LABEL out
 	disk_info_t *unit;
-	raidxor_bio_t *rxbio = (raidxor_bio_t *)(bio->bi_private);
-	raidxor_conf_t *conf = rxbio->cache->conf;
+	raidxor_bio_t *rxbio;
+	raidxor_conf_t *conf;
+	cache_t *cache;
+	cache_line_t *line;
+	stripe_t *stripe;
+
+	CHECK_ARG_RET(bio);
+
+	rxbio = (raidxor_bio_t *)(bio->bi_private);
+	CHECK_PLAIN_RET(rxbio);
+
+	cache = rxbio->cache;
+	CHECK_PLAIN_RET(cache);
+
+	CHECK_PLAIN_RET(rxbio->line < cache->n_lines);
+
+	line = &cache->lines[rxbio->line];
+	CHECK_PLAIN_RET(line);
+
+	conf = rxbio->cache->conf;
+	CHECK_PLAIN_RET(conf);
+
+	stripe = rxbio->stripe;
+	CHECK_PLAIN_RET(stripe);
 
 	if (error) {
 		/* TODO: set faulty bit on that device */
-		WITHLOCKCONF(rxbio->cache->conf, {
-		rxbio->line->status = CACHE_LINE_ERROR;
-		unit = raidxor_find_unit_bio(rxbio->stripe, bio);
+		WITHLOCKCONF(conf, {
+		line->status = CACHE_LINE_ERROR;
+		unit = raidxor_find_unit_bio(stripe, bio);
 		});
+#undef CHECK_JUMP_LABEL
+#define CHECK_JUMP_LABEL error_no_unit
 		CHECK_PLAIN(unit);
 
 		md_error(conf->mddev, unit->rdev);
+	error_no_unit: __attribute__((unused))
+		{}
 	}
 	else {
 		/* TODO: copy data around */
 	}
 
-error: __attribute__((unused))
-	WITHLOCKCONF(rxbio->cache->conf, {
+	WITHLOCKCONF(conf, {
 	if ((--rxbio->remaining) == 0) {
-		if (rxbio->line->status == CACHE_LINE_WRITEBACK)
-			rxbio->line->status = CACHE_LINE_UPTODATE;
-		--rxbio->cache->active_lines;
+		if (line->status == CACHE_LINE_WRITEBACK)
+			line->status = CACHE_LINE_UPTODATE;
+		--cache->active_lines;
 		/* TODO: wake up waiting threads */
 
 		kfree(rxbio);
@@ -511,6 +567,26 @@ static void raidxor_finish_lines(cache_t *cache)
 }
 
 /**
+ * raidxor_handle_requests() - handles waiting requests for a cache line
+ *
+ *
+ */
+static void raidxor_handle_requests(cache_t *cache, unsigned int n_line)
+{
+	cache_line_t *line;
+
+	CHECK_ARG_RET(cache);
+	CHECK_PLAIN_RET(n_line < cache->n_lines);
+
+	line = &cache->lines[n_line];
+	CHECK_PLAIN_RET(line);
+
+	if (!line->waiting) return;
+
+	/* requests are added at back, so take from front and handle */
+}
+
+/**
  * raidxor_handle_line() - tries to do something with a cache line
  *
  * Returns 1 when we've done something, else 0.  Errors count as
@@ -531,9 +607,33 @@ static int raidxor_handle_line(cache_t *cache, unsigned int n_line)
 	/* if nobody wants something from this line, do nothing */
 	if (!line->waiting) return 0;
 
-	
+	switch (line->status) {
+	case CACHE_LINE_READY:
+		raidxor_cache_load_line(cache, n_line);
+		goto out_done_something;
+	case CACHE_LINE_FAULTY:
+		raidxor_cache_recover(cache, n_line);
+		goto out_done_something;
+	case CACHE_LINE_UPTODATE:
+	case CACHE_LINE_DIRTY:
+		raidxor_handle_requests(cache, n_line);
+		goto out_done_something;
+	case CACHE_LINE_RECOVERY:
+	case CACHE_LINE_LOADING:
+	case CACHE_LINE_WRITEBACK:
+		/* no bugs, just can't do anything */
+		break;
+	case CACHE_LINE_CLEAN:
+	case CACHE_LINE_ERROR:
+		/* bugs, so log them */
+		CHECK_BUG("wrong line status, can't do anything about it");
+		break;
+		/* no default */
+	}
 
 	return 0;
+out_done_something:
+	return 1;
 }
 
 /**
