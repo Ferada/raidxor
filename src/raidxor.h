@@ -40,6 +40,7 @@ struct cache_line {
  * @active_lines: number of currently active read/write activities
  * @n_lines: number of lines
  * @n_buffers: number of actual buffers in each line
+ * @n_red_buffers: number of redundant buffers in each line
  * @n_chunk_mult: number of buffers per chunk
  * @n_waiting: number of processes waiting for a free line
  * @wait_for_line: waitqueue so we're able to wait for the event above
@@ -49,7 +50,7 @@ struct cache_line {
 struct cache {
 	raidxor_conf_t *conf;
 	unsigned int active_lines;
-	unsigned int n_lines, n_buffers, n_chunk_mult;
+	unsigned int n_lines, n_buffers, n_red_buffers, n_chunk_mult;
 
 	unsigned int n_waiting;
 	wait_queue_head_t wait_for_line;
@@ -67,7 +68,9 @@ struct cache {
 #define CACHE_LINE_FAULTY    7
 #define CACHE_LINE_RECOVERY  8
 
-static cache_t * raidxor_alloc_cache(unsigned int n_lines, unsigned int n_buffers,
+static cache_t * raidxor_alloc_cache(unsigned int n_lines,
+				     unsigned int n_buffers,
+				     unsigned int n_red_buffers,
 				     unsigned int n_chunk_mult);
 
 /*

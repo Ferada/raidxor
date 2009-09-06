@@ -121,6 +121,8 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 	   TODO: could be a driver option, or allow for shrinking/growing ... */	
 	/* one chunk is CHUNK_SIZE / PAGE_SIZE pages long, eqv. >> PAGE_SHIFT */
 	conf->cache = raidxor_alloc_cache(10, stripes[0]->n_data_units,
+					  stripes[0]->n_units -
+					  stripes[0]->n_data_units,
 					  conf->chunk_size >> PAGE_SHIFT);
 	if (!conf->cache)
 		goto out_free_stripes;

@@ -174,9 +174,12 @@ static void raidxor_free_bio(raidxor_bio_t *rxbio)
  * @n_lines: number of available lines in the cache
  * @n_buffers: buffers per line (equivalent to the width of a stripe times
                chunk_mult)
+ * @n_red_buffers: redundant buffers per line
  * @n_chunk_mult: number of buffers per chunk
  */
-static cache_t * raidxor_alloc_cache(unsigned int n_lines, unsigned int n_buffers,
+static cache_t * raidxor_alloc_cache(unsigned int n_lines,
+				     unsigned int n_buffers,
+				     unsigned int n_red_buffers,
 				     unsigned int n_chunk_mult)
 {
 	unsigned int i;
@@ -188,12 +191,13 @@ static cache_t * raidxor_alloc_cache(unsigned int n_lines, unsigned int n_buffer
 
 	cache = kzalloc(sizeof(cache_t) +
 			(sizeof(cache_line_t) +
-			 sizeof(struct page *) * n_buffers) * n_lines,
+			 sizeof(struct page *) * (n_buffers + n_red_buffers)) * n_lines,
 			GFP_NOIO);
 	CHECK_ALLOC_RET_NULL(cache);
 
 	cache->n_lines = n_lines;
 	cache->n_buffers = n_buffers;
+	cache->n_red_buffers = n_red_buffers;
 	cache->n_chunk_mult = n_chunk_mult;
 	cache->n_waiting = 0;
 
@@ -220,7 +224,7 @@ static void raidxor_cache_drop_line(cache_t *cache, unsigned int line)
 	CHECK_ARG_RET(cache);
 	CHECK_PLAIN_RET(line < cache->n_lines);
 
-	for (i = 0; i < cache->n_buffers; ++i)
+	for (i = 0; i < cache->n_buffers + cache->n_red_buffers; ++i)
 		safe_put_page(cache->lines[line].buffers[i]);
 }
 
@@ -336,185 +340,6 @@ static void raidxor_copy_bio_from_cache(cache_t *cache, unsigned int n_line,
 		__bio_kunmap_atomic(bio_mapped, KM_USER0);
 	}
 }
-
-/**
- * raidxor_copy_chunk_from_cache_line() - copies a chunk from cache to a bio
- */
-static void raidxor_copy_chunk_from_cache_line(raidxor_conf_t *conf,
-					       struct bio *bio,
-					       cache_line_t *line,
-					       unsigned int index)
-{
-	
-}
-
-/**
- * raidxor_copy_chunk_to_cache_line() - copies a chunk from a bio to cache
- */
-static void raidxor_copy_chunk_to_cache_line(raidxor_conf_t *conf,
-					     struct bio *bio,
-					     cache_line_t *line,
-					     unsigned int index)
-{
-	
-}
-
-/*
- * two helper macros in the following two functions, eventually they need
- * to have k(un)map functionality added
-*/
-#define NEXT_BVFROM do { bvfrom = bio_iovec_idx(biofrom, ++i); } while (0)
-#define NEXT_BVTO do { bvto = bio_iovec_idx(bioto, ++j); } while (0)
-
-/**
- * raidxor_gather_copy_data() - copies data from one bio to another
- *
- * Copies LENGTH bytes from BIOFROM to BIOTO.  Reading starts at FROM_OFFSET
- * from the beginning of BIOFROM and is performed at chunks of CHUNK_SIZE.
- * Writing starts at the beginning of BIOTO.  Data is written at every first
- * block of RASTER chunks.
- *
- * Corresponds to raidxor_scatter_copy_data().
- */
-static void raidxor_gather_copy_data(struct bio *bioto, struct bio *biofrom,
-				     unsigned long length,
-				     unsigned long from_offset,
-				     unsigned long chunk_size, unsigned int raster)
-{
-	unsigned int i = 0, j = 0;
-	struct bio_vec *bvfrom = bio_iovec_idx(biofrom, i);
-	struct bio_vec *bvto = bio_iovec_idx(bioto, j);
-	char *mapped;
-	unsigned long to_offset = 0;
-	unsigned int clen = 0;
-	unsigned long to_copy = min(length, chunk_size);
-
-	while (from_offset >= bvfrom->bv_len) {
-		from_offset -= bvfrom->bv_len;
-		NEXT_BVFROM;
-	}
-
-	/* FIXME: kmap, kunmap instead? */
-	mapped = __bio_kmap_atomic(bioto, j, KM_USER0);
-	while (length > 0) {
-		clen = (to_copy > bvfrom->bv_len) ? to_copy : bvfrom->bv_len;
-		clen = (clen > bvto->bv_len) ? clen : bvto->bv_len;
-
-		memcpy(mapped + bvto->bv_offset + to_offset,
-		       bvfrom->bv_page + bvfrom->bv_offset + from_offset,
-		       clen);
-
-		to_copy -= clen;
-		length -= clen;
-		from_offset += clen;
-		to_offset += clen;
-
-		if (to_copy > 0) {
-			if (from_offset == bvfrom->bv_len) {
-				from_offset = 0;
-				NEXT_BVFROM;
-			}
-		}
-		/* our chunk is finished, but we're still not done */
-		else if (length > 0 /* && to_copy == 0 */) {
-			/* advance the new location by raster */
-			from_offset += (raster - 1) * chunk_size;
-
-			/* go to the right biovec */
-			while (from_offset >= bvfrom->bv_len) {
-				from_offset -= bvfrom->bv_len;
-				NEXT_BVFROM;
-			}
-		}
-		if (to_offset == bvto->bv_len) {
-			to_offset = 0;
-			NEXT_BVTO;
-		}
-	}
-	__bio_kunmap_atomic(bioto, KM_USER0);
-}
-
-/**
- * raidxor_scatter_copy_data() - copies data from one bio to another
- *
- * Copies LENGTH bytes from BIOFROM to BIOTO.  Writing starts at TO_OFFSET from
- * the beginning of BIOTO and is performed at chunks of CHUNK_SIZE.  Reading
- * starts at the beginning of BIOFROM.  Data is written at every first block of
- * RASTER chunks.
- *
- * Corresponds to raidxor_gather_copy_data().
- */
-static void raidxor_scatter_copy_data(struct bio *bioto, struct bio *biofrom,
-				      unsigned long length,
-				      unsigned long to_offset,
-				      unsigned long chunk_size, unsigned int raster)
-{
-	unsigned int i = 0, j = 0;
-	unsigned long from_offset = 0;
-	struct bio_vec *bvfrom = bio_iovec_idx(biofrom, i);
-	struct bio_vec *bvto = bio_iovec_idx(bioto, j);
-	char *mapped;
-	/* the number of bytes in the memcpy call */
-	unsigned int clen = 0;
-	/* remainder which needs to be copied up to chunk_size, before we
-	   advance the memory locations */
-	unsigned long to_copy = min(length, chunk_size);
-
-	/* adjust offset and the vector so we actually write inside it, not
-	   supported for from_offset, since we assume that we start from the
-	   beginning on that bio */
-	while (to_offset >= bvto->bv_len) {
-		to_offset -= bvto->bv_len;
-		NEXT_BVTO;
-	}
-
-	/* FIXME: kmap, kunmap instead? */
-	mapped = __bio_kmap_atomic(bioto, j, KM_USER0);
-	while (length > 0) {
-		/* clip actual number bytes down so we don't try to copy
-		   beyond a biovec, both from and to */
-		clen = (to_copy > bvfrom->bv_len) ? to_copy : bvfrom->bv_len;
-		clen = (clen > bvto->bv_len) ? clen : bvto->bv_len;
-		//clen = min(min(to_copy, bvfrom->bv_len), bvto->bv_len);
-
-		memcpy(mapped + bvto->bv_offset + to_offset,
-		       bvfrom->bv_page + bvfrom->bv_offset + from_offset,
-		       clen);
-
-		to_copy -= clen;
-		length -= clen;
-		from_offset += clen;
-		to_offset += clen;
-
-		/* our chunk is not finished yet, so we adjust the locations */
-		/* FIXME: are theses matches exhaustive? */
-		if (to_copy > 0) {
-			if (to_offset == bvto->bv_len) {
-				to_offset = 0;
-				NEXT_BVTO;
-			}
-		}
-		/* our chunk is finished, but we're still not done */
-		else if (length > 0 /* && to_copy == 0 */) {
-			/* advance the new location by raster */
-			to_offset += (raster - 1) * chunk_size;
-
-			/* go to the right biovec */
-			while (to_offset >= bvto->bv_len) {
-				to_offset -= bvto->bv_len;
-				NEXT_BVTO;
-			}
-		}
-		if (from_offset == bvfrom->bv_len) {
-			from_offset = 0;
-			NEXT_BVFROM;
-		}
-	}
-	__bio_kunmap_atomic(bioto, KM_USER0);
-}
-
-#undef NEXT_BVFROM
-#undef NEXT_BVTO
 
 static void raidxor_copy_bio(struct bio *bioto, struct bio *biofrom)
 {

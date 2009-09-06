@@ -50,7 +50,7 @@ static int raidxor_cache_make_ready(cache_t *cache, unsigned int n_line)
 	if (line->status == CACHE_LINE_CLEAN) {
 		line->status = CACHE_LINE_READY;
 
-		for (i = 0; i < cache->n_buffers; ++i)
+		for (i = 0; i < cache->n_buffers + cache->n_red_buffers; ++i)
 			if (!(line->buffers[i] = alloc_page(GFP_NOIO)))
 				goto out_free_pages;
 	}
@@ -160,7 +160,7 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 	sector_t actual_sector;
 	raidxor_bio_t *rxbio;
 	struct bio *bio;
-	unsigned int i, j, k, n_chunk_mult;
+	unsigned int i, j, k, l, n_chunk_mult;
 
 	CHECK_ARG(cache);
 	CHECK_PLAIN(n < cache->n_lines);
@@ -184,7 +184,7 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 
 	n_chunk_mult = cache->n_chunk_mult;
 
-	for (i = 0; i < rxbio->n_bios; ++i) {
+	for (i = 0, l = 0; i < rxbio->n_bios; ++i) {
 		/* we also load the redundant pages */
 
 		if (test_bit(Faulty, &stripe->units[i]->rdev->flags))
@@ -205,11 +205,17 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 		/* assign page */
 		bio->bi_vcnt = n_chunk_mult;
 		for (j = 0; j < n_chunk_mult; ++j) {
-			k = i * n_chunk_mult + j;
+			if (stripe->units[i]->redundant)
+				k = cache->n_red_buffers + l * n_chunk_mult + j;
+			else
+				k = i * n_chunk_mult + j;
 			bio->bi_io_vec[k].bv_page = line->buffers[k];
 			bio->bi_io_vec[k].bv_len = PAGE_SIZE;
 			bio->bi_io_vec[k].bv_offset = 0;
 		}
+
+		if (stripe->units[i]->redundant)
+			++l;
 	}
 
 	line->rxbio = rxbio;
@@ -235,7 +241,7 @@ static int raidxor_cache_writeback_line(cache_t *cache, unsigned int n)
 	stripe_t *stripe;
 	sector_t actual_sector;
 	raidxor_bio_t *rxbio;
-	unsigned int i, j, k, n_chunk_mult;
+	unsigned int i, j, k, l, n_chunk_mult;
 	struct bio *bio;
 	raidxor_conf_t *conf = cache->conf;
 
@@ -256,7 +262,7 @@ static int raidxor_cache_writeback_line(cache_t *cache, unsigned int n)
 
 	n_chunk_mult = cache->n_chunk_mult;
 
-	for (i = 0; i < rxbio->n_bios; ++i) {
+	for (i = 0, l = 0; i < rxbio->n_bios; ++i) {
 		/* only one chunk */
 		rxbio->bios[i] = bio = bio_alloc(GFP_NOIO, cache->n_chunk_mult);
 		CHECK_ALLOC(rxbio->bios[i]);
@@ -275,22 +281,22 @@ static int raidxor_cache_writeback_line(cache_t *cache, unsigned int n)
 			stripe->units[i]->rdev->data_offset;
 		bio->bi_size = n_chunk_mult * PAGE_SIZE;
 
-		/* assign page */
 		bio->bi_vcnt = n_chunk_mult;
+		/* assign pages */
 		for (j = 0; j < n_chunk_mult; ++j) {
-			k = i * n_chunk_mult + j;
+			if (stripe->units[i]->redundant)
+				k = cache->n_red_buffers + l * n_chunk_mult + j;
+			else
+				k = i * n_chunk_mult + j;
 			bio->bi_io_vec[k].bv_page = line->buffers[k];
 			bio->bi_io_vec[k].bv_len = PAGE_SIZE;
 			bio->bi_io_vec[k].bv_offset = 0;
-		}		
-	}
+		}
 
-	for (i = 0, k = 0; i < rxbio->n_bios; ++i) {
-		if (stripe->units[i]->redundant) continue;
-		raidxor_copy_chunk_from_cache_line(conf, bio, line, k);
-		++k;
+		if (stripe->units[i]->redundant)
+			++l;
 	}
-
+	
 	for (i = 0; i < rxbio->n_bios; ++i) {
 		if (!stripe->units[i]->redundant) continue;
 		if (raidxor_xor_combine(rxbio->bios[i], rxbio,
@@ -349,19 +355,15 @@ static void raidxor_end_load_line(struct bio *bio, int error)
 		});
 		md_error(conf->mddev, stripe->units[index]->rdev);
 	}
-	else if (!stripe->units[index]->redundant) {
-		raidxor_copy_chunk_to_cache_line(conf, bio, line,
-						 data_index);
-	}
 
 	WITHLOCKCONF(conf, {
 	if ((--rxbio->remaining) == 0) {
-		--rxbio->cache->active_lines;
 		if (line->status == CACHE_LINE_LOADING) {
 			line->status = CACHE_LINE_UPTODATE;
 			kfree(rxbio);
 			line->rxbio = NULL;
 		}
+		--rxbio->cache->active_lines;
 		/* TODO: wake up waiting threads */
 	}
 	});
@@ -371,12 +373,12 @@ static void raidxor_end_writeback_line(struct bio *bio, int error)
 {
 #undef CHECK_JUMP_LABEL
 #define CHECK_JUMP_LABEL out
-	disk_info_t *unit;
 	raidxor_bio_t *rxbio;
 	raidxor_conf_t *conf;
 	cache_t *cache;
 	cache_line_t *line;
 	stripe_t *stripe;
+	unsigned int index, data_index;
 
 	CHECK_ARG_RET(bio);
 
@@ -397,26 +399,20 @@ static void raidxor_end_writeback_line(struct bio *bio, int error)
 	stripe = rxbio->stripe;
 	CHECK_PLAIN_RET(stripe);
 
-	if (error) {
-		WITHLOCKCONF(conf, {
-		unit = raidxor_find_unit_bio(stripe, bio);
-		});
-#undef CHECK_JUMP_LABEL
-#define CHECK_JUMP_LABEL error_no_unit
-		CHECK_PLAIN(unit);
+	index = raidxor_bio_index(rxbio, bio, &data_index);
 
-		md_error(conf->mddev, unit->rdev);
-	error_no_unit: __attribute__((unused)) {}
-	}
+	if (error)
+		md_error(conf->mddev, stripe->units[index]->rdev);
 
 	WITHLOCKCONF(conf, {
 	if ((--rxbio->remaining) == 0) {
 		line->status = CACHE_LINE_UPTODATE;
-		--cache->active_lines;
 		/* TODO: wake up waiting threads */
 
 		line->rxbio = NULL;
 		kfree(rxbio);
+
+		--cache->active_lines;
 	}
 	});
 }
@@ -964,8 +960,8 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 	CHECK_ARG(q);
 	CHECK_ARG(bio);
 
-	CHECK_PLAIN(mddev);
 	mddev = q->queuedata;
+	CHECK_PLAIN(mddev);
 
 	conf = mddev_to_conf(mddev);
 	CHECK_PLAIN(conf);
