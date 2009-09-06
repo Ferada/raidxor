@@ -850,6 +850,25 @@ static void raidxor_wakeup_thread(raidxor_conf_t *conf)
 	md_wakeup_thread(conf->mddev->thread);
 }
 
+static void raidxor_align_sector_to_strip(raidxor_conf_t *conf,
+					  stripe_t *stripe,
+					  sector_t *sector)
+{
+	sector_t strip_sectors;
+	sector_t mod;
+
+	CHECK_ARG_RET(conf);
+	CHECK_ARG_RET(stripe);
+	CHECK_ARG_RET(sector);
+
+	strip_sectors = (conf->chunk_size >> 9) * stripe->n_data_units;
+
+	mod = *sector % strip_sectors;
+
+	if (mod != 0)
+		*sector -= mod;
+}
+
 static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 {
 	mddev_t *mddev = q->queuedata;
@@ -858,6 +877,7 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 	stripe_t *stripe;
 	struct bio_pair *split;
 	unsigned int line;
+	sector_t aligned_sector, strip_sectors;
 
 	printk(KERN_EMERG "raidxor: got request\n");
 
@@ -867,22 +887,36 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 
 	stripe = raidxor_sector_to_stripe(conf, bio->bi_sector, NULL);
 	CHECK_PLAIN(stripe);
+	strip_sectors = (conf->chunk_size >> 9) * stripe->n_data_units;
 
-#if 0
-	if (raidxor_bio_maybe_split_boundary(stripe, bio, newsector, &split)) {
-		if (!split)
-			goto out_unlock;
 
-		generic_make_request(&split->bio1);
-		generic_make_request(&split->bio2);
-		bio_pair_release(split);
+	aligned_sector = bio->bi_sector;
 
-		return 0;
+	/* round sector down to current or previous strip */
+	raidxor_align_sector_to_strip(conf, stripe, &aligned_sector);
+
+	/* set as offset to new base */
+	bio->bi_sector = bio->bi_sector - aligned_sector;
+
+
+	/* checked assumption is: aligned_sector is aligned to
+	   strip/cache line, bio->bi_sector is the offset inside this strip */
+
+	CHECK_PLAIN(aligned_sector % (PAGE_SIZE >> 9) == 0);
+	CHECK_PLAIN(aligned_sector % strip_sectors == 0);
+
+	if (bio->bi_sector + (bio->bi_size >> 9) > strip_sectors) {
+		/* TODO: split bio */
+		printk(KERN_EMERG "need to split request because "
+		       "%llu > %llu\n",
+		       (unsigned long long) (bio->bi_sector +
+					     (bio->bi_size >> 9)),
+		       (unsigned long long) strip_sectors);
+		goto out_unlock;
 	}
-#endif
 
 	/* look for matching line or otherwise available */
-	if (!raidxor_cache_find_line(cache, bio->bi_sector, &line)) {
+	if (!raidxor_cache_find_line(cache, aligned_sector, &line)) {
 		/* if it's not in the cache and the stripe is flagged as error,
 		   abort early, as we can do nothing */
 		if (test_bit(STRIPE_ERROR, &stripe->flags))
@@ -898,10 +932,9 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 	    cache->lines[line].status == CACHE_LINE_READY)
 	{
 		raidxor_cache_make_ready(cache, line);
-		raidxor_cache_make_load_me(cache, line, bio->bi_sector);
+		raidxor_cache_make_load_me(cache, line, aligned_sector);
 	}
-	else
-		goto out_unlock; // bug, so error and out
+	/* TODO: which states are unacceptable? */
 	/* pack the request somewhere in the cache */
 	raidxor_cache_add_request(cache, line, bio);
 	});
@@ -911,7 +944,7 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 	return 0;
 out_unlock: __attribute__((unused))
 	UNLOCKCONF(conf);
-/* out: */
+
 	bio_io_error(bio);
 	return 0;
 }
