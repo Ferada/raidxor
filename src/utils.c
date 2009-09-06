@@ -267,6 +267,9 @@ static void raidxor_safe_free_conf(raidxor_conf_t *conf) {
 	kfree(conf);
 }
 
+/**
+ * raidxor_copy_bio_to_cache() - copies data from a bio to cache
+ */
 static void raidxor_copy_bio_to_cache(cache_t *cache, unsigned int n_line,
 				      struct bio *bio)
 {
@@ -299,6 +302,9 @@ static void raidxor_copy_bio_to_cache(cache_t *cache, unsigned int n_line,
 	}
 }
 
+/**
+ * raidxor_copy_bio_from_cache() - copies data from cache to a bio
+ */
 static void raidxor_copy_bio_from_cache(cache_t *cache, unsigned int n_line,
 					struct bio *bio)
 {

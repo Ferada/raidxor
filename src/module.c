@@ -923,21 +923,57 @@ static void raidxor_align_sector_to_strip(raidxor_conf_t *conf,
 		*sector -= mod;
 }
 
+static int raidxor_check_bio_size_and_layout(raidxor_conf_t *conf,
+					     struct bio *bio)
+{
+	unsigned int i;
+	struct bio_vec *bvl;
+
+	if ((bio->bi_size % PAGE_SIZE) != 0)
+		return 1;
+
+	bio_for_each_segment(bvl, bio, i) {
+		if (bvl->bv_len != PAGE_SIZE)
+			return 2;
+
+		if (bvl->bv_offset != 0)
+			return 3;
+	}			
+
+	return 0;
+}
+
 static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 {
-	mddev_t *mddev = q->queuedata;
-	raidxor_conf_t *conf = mddev_to_conf(mddev);
-	cache_t *cache = conf->cache;
+	mddev_t *mddev;
+	raidxor_conf_t *conf;
+	cache_t *cache;
 	stripe_t *stripe;
 	struct bio_pair *split;
 	unsigned int line;
 	sector_t aligned_sector, strip_sectors;
+
+#undef CHECK_JUMP_LABEL
+#define CHECK_JUMP_LABEL out
+	CHECK_ARG(q);
+	CHECK_ARG(bio);
+
+	CHECK_PLAIN(mddev);
+	mddev = q->queuedata;
+
+	conf = mddev_to_conf(mddev);
+	CHECK_PLAIN(conf);
+
+	cache = conf->cache;
+	CHECK_PLAIN(cache);
 
 	printk(KERN_EMERG "raidxor: got request\n");
 
 	WITHLOCKCONF(conf, {
 #undef CHECK_JUMP_LABEL
 #define CHECK_JUMP_LABEL out_unlock
+
+	CHECK_PLAIN(!raidxor_check_bio_size_and_layout(conf, bio));
 
 	stripe = raidxor_sector_to_stripe(conf, bio->bi_sector, NULL);
 	CHECK_PLAIN(stripe);
@@ -1000,7 +1036,7 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 	return 0;
 out_unlock: __attribute__((unused))
 	UNLOCKCONF(conf);
-
+out: __attribute__((unused))
 	bio_io_error(bio);
 	return 0;
 }
