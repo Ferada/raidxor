@@ -58,11 +58,11 @@ struct cache {
 
 #define CACHE_LINE_CLEAN     0
 #define CACHE_LINE_READY     1
-#define CACHE_LINE_LOADING   2
-#define CACHE_LINE_UPTODATE  3
-#define CACHE_LINE_DIRTY     4
-#define CACHE_LINE_WRITEBACK 5
-#define CACHE_LINE_ERROR     6
+#define CACHE_LINE_LOAD_ME   2
+#define CACHE_LINE_LOADING   3
+#define CACHE_LINE_UPTODATE  4
+#define CACHE_LINE_DIRTY     5
+#define CACHE_LINE_WRITEBACK 6
 #define CACHE_LINE_FAULTY    7
 #define CACHE_LINE_RECOVERY  8
 
@@ -72,38 +72,38 @@ static cache_t * raidxor_alloc_cache(unsigned int n_lines, unsigned int n_buffer
 /*
    Life cycle of a cache line:
 
-                    /----------------------------------  12
-                   v                                   \
-   +=======+ 1 	+-------+ 2  +---------+ 9 +--------+   \
-   ¦ CLEAN ¦<==>| READY |<==>| LOADING |-->| FAULTY |    \
-   +=======+  	+-------+    +---------+   +--------+     |
-		  ^ 	     3	---          \  10        |
-		  | 	 ------/       11     --->+----------+
-                  |     /       \-----------------| RECOVERY |
-		 4|    /    	      +-------+   +----------+
-                  |   v		      | ERROR |
-                +----------+	      +-------+
-                | UPTODATE |<-\ 7	  ^ 
-                +----------+   ----\	 8|
-         	 5 |	   	    \+----------+
+                    /----------------------------------------- 10
+                   v            	                      \
+   +=======+ 1 	+-------+ 2  +---------+ 3 +---------+ 9 +----------+
+   ¦ CLEAN ¦<==>| READY |--->| LOAD ME |-->| LOADING |-->| RECOVERY |
+   +=======+  	+-------+    +---------+   +---------+   +----------+
+		  ^		 	      4	 /             / 11
+		  | 	 -----------------------/--------------
+                  |     /
+		 5|    /
+                  |   v
+                +----------+
+                | UPTODATE |<-\ 8
+                +----------+   ----\
+         	 6 |	   	    \+----------+
 		   v	 	  /->| WRITEBACK|
 		+----------+  /---   +----------+
-		|  DIRTY   |--  6
+		|  DIRTY   |--  7
 		+----------+
 
    1: allocating pages or dropping them
-   2: loading data from disk
-   3: finishing read from disk
-   4: dropping a cache line
-   5: write some data to the cache
-   6: start writeback process
-   7: finishing writeback, data in cache and on device is now synchronised
-   8: we couldn't finish writeback, just leave the data here
-   9: we couldn't read from one device, go here
-  10: start recovery if we have enough information
+   2: we wan't to load some data from disk
+   3: loading data from disk
+   4: finishing read from disk
+   5: dropping a cache line
+   6: write some data to the cache
+   7: start writeback process
+   8: finishing writeback, data in cache and on device is either
+      synchronised, or not synchronised but marked faulty
+   9: we couldn't read from one device, start recovery
+  10: recovery couldn't be finished (or started), so drop all requests and
+      drop back to a more usable state
   11: recovery finished, so we are done
-  12: recovery couldn't be finished, so drop all requests and drop back to
-      a more usable state
 
    during LOADING, RECOVERY and WRITEBACK, nothing is done in the handlers.
    the transition from clean to ready is simply memory (de-)allocation, so
@@ -138,12 +138,9 @@ static cache_t * raidxor_alloc_cache(unsigned int n_lines, unsigned int n_buffer
    recovery is handled inside the bio layer, the necessary generic_requests
    are started inline (outside of raidxord).
 
-   since an error during writeback is very bad, we just stop there, go to
-   the error state, which is not purged from the cache.
-
-   if the whole cache is full of error lines, we naturally bring the whole
-   raid to read-only mode and abort request to sectors other than already
-   in cache.
+   since we can't do anything about an error during writeback (apart from
+   marking the device faulty), we just go to uptodate state (so it can be
+   purged if necessary)
 
    void raid_abort_readonly();
      - sets abort flag

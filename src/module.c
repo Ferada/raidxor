@@ -22,7 +22,7 @@ static int raidxor_cache_make_clean(cache_t *cache, unsigned int line)
 	CHECK_PLAIN_RET_VAL(line < cache->n_lines);
 
 	if (cache->lines[line].status == CACHE_LINE_CLEAN) return 0;
-	CHECK_PLAIN_RET_VAL(cache->lines[line].status != CACHE_LINE_READY);
+	CHECK_PLAIN_RET_VAL(cache->lines[line].status == CACHE_LINE_READY);
 
 	cache->lines[line].status = CACHE_LINE_CLEAN;
 	raidxor_cache_drop_line(cache, line);
@@ -32,6 +32,7 @@ static int raidxor_cache_make_clean(cache_t *cache, unsigned int line)
 
 static int raidxor_cache_make_ready(cache_t *cache, unsigned int line)
 {
+#undef CHECK_RETURN_VALUE
 #define CHECK_RETURN_VALUE 1
 	unsigned int i;
 
@@ -39,7 +40,7 @@ static int raidxor_cache_make_ready(cache_t *cache, unsigned int line)
 	CHECK_PLAIN_RET_VAL(line < cache->n_lines);
 
 	if (cache->lines[line].status == CACHE_LINE_READY) return 0;
-	CHECK_PLAIN_RET_VAL(cache->lines[line].status != CACHE_LINE_CLEAN);
+	CHECK_PLAIN_RET_VAL(cache->lines[line].status == CACHE_LINE_CLEAN);
 
 	cache->lines[line].status = CACHE_LINE_READY;
 
@@ -51,6 +52,24 @@ static int raidxor_cache_make_ready(cache_t *cache, unsigned int line)
 out_free_pages:
 	raidxor_cache_make_clean(cache, line);
 	return 1;
+}
+
+static int raidxor_cache_make_load_me(cache_t *cache, unsigned int line,
+				      sector_t sector)
+{
+#undef CHECK_RETURN_VALUE
+#define CHECK_RETURN_VALUE 1
+
+	CHECK_ARG_RET_VAL(cache);
+	CHECK_PLAIN_RET_VAL(line < cache->n_lines);
+
+	if (cache->lines[line].status == CACHE_LINE_LOAD_ME) return 0;
+	CHECK_PLAIN_RET_VAL(cache->lines[line].status == CACHE_LINE_READY);
+
+	cache->lines[line].status = CACHE_LINE_LOAD_ME;
+	cache->lines[line].sector = sector;
+
+	return 0;
 }
 
 /**
@@ -72,6 +91,7 @@ static void raidxor_cache_recover(cache_t *cache, unsigned int n_line)
 #if 0
 	if (!/* TODO: we have the equations */) return;
 #else
+	/* at the moment, we don't have decoding equations */
 	return;
 #endif
 
@@ -87,6 +107,7 @@ static void raidxor_end_writeback_line(struct bio *bio, int error);
 
 static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 {
+#undef CHECK_JUMP_LABEL
 #define CHECK_JUMP_LABEL out
 	cache_line_t *line;
 	stripe_t *stripe;
@@ -100,7 +121,7 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 	CHECK_PLAIN(n < cache->n_lines);
 
 	line = &cache->lines[n];
-	CHECK_PLAIN(line->status == CACHE_LINE_READY);
+	CHECK_PLAIN(line->status == CACHE_LINE_LOAD_ME);
 
 	stripe = raidxor_sector_to_stripe(conf, line->sector,
 					  &actual_sector);
@@ -115,17 +136,14 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 	n_chunk_mult = cache->n_chunk_mult;
 
 	for (i = 0; i < rxbio->n_bios; ++i) {
-		if (stripe->units[i]->redundant)
+		/* we also load the redundant pages */
+
+		if (test_bit(Faulty, &stripe->units[i]->rdev->flags))
 			continue;
+
 		/* only one chunk */
 		rxbio->bios[i] = bio = bio_alloc(GFP_NOIO, n_chunk_mult);
 		CHECK_ALLOC(rxbio->bios[i]);
-
-		if (test_bit(Faulty, &stripe->units[i]->rdev->flags)) {
-			printk(KERN_INFO "raidxor: got a faulty drive"
-			       " during a request, skipping for now");
-			goto out_free_bio;
-		}
 
 		bio->bi_rw = READ;
 		bio->bi_private = rxbio;
@@ -280,13 +298,10 @@ static void raidxor_end_load_line(struct bio *bio, int error)
 
 	WITHLOCKCONF(conf, {
 	if ((--rxbio->remaining) == 0) {
-		if (line->status == CACHE_LINE_LOADING) {
+		if (line->status == CACHE_LINE_LOADING)
 			line->status = CACHE_LINE_UPTODATE;
-		}
-		else if (line->status == CACHE_LINE_FAULTY) {
-			/* TODO: try starting recovery */
+		else if (line->status == CACHE_LINE_FAULTY)
 			raidxor_cache_recover(cache, rxbio->line);
-		}
 		--rxbio->cache->active_lines;
 		/* TODO: wake up waiting threads */
 		kfree(rxbio);
@@ -326,7 +341,6 @@ static void raidxor_end_writeback_line(struct bio *bio, int error)
 
 	if (error) {
 		WITHLOCKCONF(conf, {
-		line->status = CACHE_LINE_ERROR;
 		unit = raidxor_find_unit_bio(stripe, bio);
 		});
 #undef CHECK_JUMP_LABEL
@@ -347,33 +361,6 @@ static void raidxor_end_writeback_line(struct bio *bio, int error)
 		kfree(rxbio);
 	}
 	});
-}
-
-/**
- * raidxor_compute_length() - computes the number of bytes to be read
- *
- * That is, given the position and length in the virtual device, how
- * many blocks do we actually have to copy from a single request.
- */
-static unsigned long raidxor_compute_length(raidxor_conf_t *conf,
-					    stripe_t *stripe,
-					    struct bio *mbio,
-					    unsigned long index)
-{
-	/* copy this for every unit in the stripe */
-	unsigned long result = (mbio->bi_size / (conf->chunk_size * stripe->n_data_units))
-		* conf->chunk_size;
-
-	unsigned long over = mbio->bi_size % (conf->chunk_size *
-					      stripe->n_data_units);
-
-	/* now, this is under n_data_units * chunk_size, so lets deal with it,
-	   if we have more than a full strip, copy those bytes from the
-	   remaining units, but really only what we need */
-	if (over > index * conf->chunk_size)
-		result += min(conf->chunk_size, over - index * conf->chunk_size);
-
-	return result;
 }
 
 /**
@@ -410,7 +397,8 @@ static void raidxor_xor_single(struct bio *bioto, struct bio *biofrom)
 /**
  * raidxor_check_same_size_and_layout() - checks two bios
  *
- * Returns 0 if both bios have the same size and are layed out the same way, else 1.
+ * Returns 0 if both bios have the same size and are layed out the same
+ * way, else != 0.
  */
 static int raidxor_check_same_size_and_layout(struct bio *x, struct bio *y)
 {
@@ -490,6 +478,10 @@ out:
 	return 1;
 }
 
+/**
+ * raidxor_error() - propagates a device error
+ *
+ */
 static void raidxor_error(mddev_t *mddev, mdk_rdev_t *rdev)
 {
 	char buffer[BDEVNAME_SIZE];
@@ -506,22 +498,6 @@ static void raidxor_error(mddev_t *mddev, mdk_rdev_t *rdev)
 		       bdevname(rdev->bdev, buffer));
 	}
 	});
-}
-
-static void raidxor_compute_length_and_pages(stripe_t *stripe,
-					     struct bio *mbio,
-					     unsigned long *length,
-					     unsigned long *npages)
-{
-	/* mbio->bi_size = M * chunk_size * n_data_units
-	   ---------------------------------------------  = M * chunk_size
-	   n_data_units
-	*/
-	unsigned long tmp = mbio->bi_size / stripe->n_data_units;
-
-	/* number of bytes to write to each data unit */
-	*length = tmp;
-	*npages = tmp / PAGE_SIZE;
 }
 
 /**
@@ -559,12 +535,12 @@ static void raidxor_finish_lines(cache_t *cache)
 			break;
 		case CACHE_LINE_DIRTY:
 			/* when the callback is invoked, the main thread is
-			   waked up and eventually revisits this entry  */
+			   woken up and eventually revisits this entry  */
 			raidxor_cache_writeback_line(cache, i);
 			break;
+		case CACHE_LINE_LOAD_ME:
 		case CACHE_LINE_LOADING:
 		case CACHE_LINE_WRITEBACK:
-		case CACHE_LINE_ERROR:
 		case CACHE_LINE_FAULTY:
 		case CACHE_LINE_RECOVERY:
 			/* can't do anything useful with these */
@@ -597,6 +573,8 @@ static void raidxor_handle_requests(cache_t *cache, unsigned int n_line)
 
 	line = &cache->lines[n_line];
 	CHECK_PLAIN_RET(line);
+	CHECK_PLAIN_RET(line->status == CACHE_LINE_UPTODATE ||
+			line->status == CACHE_LINE_DIRTY);
 
 	/* requests are added at back, so take from front and handle */
 	while ((bio = raidxor_cache_remove_request(cache, n_line))) {
@@ -606,9 +584,9 @@ static void raidxor_handle_requests(cache_t *cache, unsigned int n_line)
 
 		/* mark dirty */
 		if (bio_data_dir(bio) == WRITE &&
-		    cache->lines[n_line].status == CACHE_LINE_UPTODATE)
+		    line->status == CACHE_LINE_UPTODATE)
 		{
-			cache->lines[n_line].status = CACHE_LINE_DIRTY;
+			line->status = CACHE_LINE_DIRTY;
 		}
 	}
 }
@@ -635,7 +613,7 @@ static int raidxor_handle_line(cache_t *cache, unsigned int n_line)
 	if (!line->waiting) return 0;
 
 	switch (line->status) {
-	case CACHE_LINE_READY:
+	case CACHE_LINE_LOAD_ME:
 		raidxor_cache_load_line(cache, n_line);
 		goto out_done_something;
 	case CACHE_LINE_FAULTY:
@@ -643,17 +621,14 @@ static int raidxor_handle_line(cache_t *cache, unsigned int n_line)
 		goto out_done_something;
 	case CACHE_LINE_UPTODATE:
 	case CACHE_LINE_DIRTY:
-	case CACHE_LINE_ERROR:
 		raidxor_handle_requests(cache, n_line);
 		goto out_done_something;
+	case CACHE_LINE_READY:
 	case CACHE_LINE_RECOVERY:
 	case CACHE_LINE_LOADING:
 	case CACHE_LINE_WRITEBACK:
-		/* no bugs, just can't do anything */
-		break;
 	case CACHE_LINE_CLEAN:
-		/* bug, so log it */
-		CHECK_BUG("wrong line status, can't do anything about it");
+		/* no bugs, just can't do anything */
 		break;
 		/* no default */
 	}
@@ -866,18 +841,18 @@ static int raidxor_stop(mddev_t *mddev)
  */
 static void raidxor_wakeup_thread(raidxor_conf_t *conf)
 {
-     
-     md_wakeup_thread(conf->mddev->thread);
+	CHECK_ARG_RET(conf);
+	md_wakeup_thread(conf->mddev->thread);
 }
 
 static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 {
 	mddev_t *mddev = q->queuedata;
 	raidxor_conf_t *conf = mddev_to_conf(mddev);
+	cache_t *cache = conf->cache;
 	stripe_t *stripe;
 	struct bio_pair *split;
 	unsigned int line;
-	cache_t *cache;
 
 	printk(KERN_EMERG "raidxor: got request\n");
 
@@ -910,16 +885,18 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 
 		/* TODO: else if no line is available, wait for it ... */
 		++cache->n_waiting;
-		cache->wait_for_line;
-		/* TODO: detect CONF_STOPPING and a cache full with errors */
+		/* cache->wait_for_line; */
+		/* TODO: detect CONF_STOPPING */
 	}
 
 	if (cache->lines[line].status == CACHE_LINE_CLEAN ||
 	    cache->lines[line].status == CACHE_LINE_READY)
 	{
 		raidxor_cache_make_ready(cache, line);
-		cache->lines[line].sector = bio->bi_sector;
+		raidxor_cache_make_load_me(cache, line, bio->bi_sector);
 	}
+	else
+		goto out_unlock; // bug, so error and out
 	/* pack the request somewhere in the cache */
 	raidxor_cache_add_request(cache, line, bio);
 	});
