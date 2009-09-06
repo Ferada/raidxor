@@ -102,6 +102,25 @@ static void raidxor_cache_recover(cache_t *cache, unsigned int n_line)
 	cache->lines[n_line].status = CACHE_LINE_UPTODATE;
 }
 
+static unsigned int raidxor_bio_index(raidxor_bio_t *rxbio,
+				      struct bio *bio,
+				      unsigned int *data_index)
+{
+	unsigned int i, k;
+
+	for (i = 0, k = 0; i < rxbio->n_bios; ++i) {
+		if (rxbio->bios[i] == bio) {
+			if (data_index)
+				*data_index = k;
+			return i;
+		}
+		if (!rxbio->stripe->units[i]->redundant)
+			++k;
+	}
+	CHECK_BUG("didn't find bio");
+	return 0;
+}
+
 static void raidxor_end_load_line(struct bio *bio, int error);
 static void raidxor_end_writeback_line(struct bio *bio, int error);
 
@@ -240,11 +259,18 @@ static int raidxor_cache_writeback_line(cache_t *cache, unsigned int n)
 		}		
 	}
 
-	for (i = 0; i < rxbio->n_bios; ++i)
-		if (stripe->units[i]->redundant) {
-			if (raidxor_xor_combine(rxbio->bios[i], rxbio, stripe->units[i]->encoding))
-				goto out_free_bio;
-		}
+	for (i = 0, k = 0; i < rxbio->n_bios; ++i) {
+		if (stripe->units[i]->redundant) continue;
+		raidxor_copy_chunk_from_cache_line(conf, bio, line, k);
+		++k;
+	}
+
+	for (i = 0; i < rxbio->n_bios; ++i) {
+		if (!stripe->units[i]->redundant) continue;
+		if (raidxor_xor_combine(rxbio->bios[i], rxbio,
+					stripe->units[i]->encoding))
+			goto out_free_bio;
+	}
 
 	rxbio->remaining = rxbio->n_bios;
 	++cache->active_lines;
@@ -268,11 +294,15 @@ static void raidxor_end_load_line(struct bio *bio, int error)
 	raidxor_conf_t *conf;
 	cache_t *cache;
 	cache_line_t *line;
+	stripe_t *stripe;
+	unsigned int index, data_index;
 
 	CHECK_ARG_RET(bio);
 
 	rxbio = (raidxor_bio_t *)(bio->bi_private);
 	CHECK_PLAIN_RET(rxbio);
+
+	stripe = rxbio->stripe;
 
 	cache = rxbio->cache;
 	CHECK_PLAIN_RET(cache);
@@ -285,20 +315,17 @@ static void raidxor_end_load_line(struct bio *bio, int error)
 	conf = rxbio->cache->conf;
 	CHECK_PLAIN_RET(conf);
 
+	index = raidxor_bio_index(rxbio, bio, &data_index);
+
 	if (error) {
 		WITHLOCKCONF(conf, {
 		line->status = CACHE_LINE_FAULTY;
-		unit = raidxor_find_unit_bio(rxbio->stripe, bio);
 		});
-#undef CHECK_JUMP_LABEL
-#define CHECK_JUMP_LABEL error_no_unit
-		CHECK_PLAIN(unit);
-
-		md_error(conf->mddev, unit->rdev);
-	error_no_unit: __attribute__((unused)) {}
+		md_error(conf->mddev, stripe->units[index]->rdev);
 	}
-	else {
-		/* TODO: copy data around */
+	else if (!stripe->units[index]->redundant) {
+		raidxor_copy_chunk_to_cache_line(conf, bio, line,
+						 data_index);
 	}
 
 	WITHLOCKCONF(conf, {

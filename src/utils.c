@@ -204,6 +204,22 @@ static void raidxor_free_cache(cache_t *cache)
 	kfree(cache);
 }
 
+static void raidxor_copy_chunk_from_cache_line(raidxor_conf_t *conf,
+					       struct bio *bio,
+					       cache_line_t *line,
+					       unsigned int index)
+{
+
+}
+
+static void raidxor_copy_chunk_to_cache_line(raidxor_conf_t *conf,
+					     struct bio *bio,
+					     cache_line_t *line,
+					     unsigned int index)
+{
+	
+}
+
 /*
  * two helper macros in the following two functions, eventually they need
  * to have k(un)map functionality added
