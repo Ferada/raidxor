@@ -270,13 +270,65 @@ static void raidxor_safe_free_conf(raidxor_conf_t *conf) {
 static void raidxor_copy_bio_to_cache(cache_t *cache, unsigned int n_line,
 				      struct bio *bio)
 {
-	
+	/* bio->bi_sector is the offset into the line.
+	   every bio->bi_io_vec should be of size PAGE_SIZE */
+	struct bio_vec *bvl;
+	unsigned int i, j;
+	char *bio_mapped, *page_mapped;
+	sector_t offset;
+	cache_line_t *line;
+
+	offset = bio->bi_sector;
+	line = &cache->lines[n_line];
+
+	/* skip offset / some pages */
+	j = 0;
+	while (offset > 0) {
+		offset -= PAGE_SIZE >> 9;
+		++j;
+	}
+
+	bio_for_each_segment(bvl, bio, i) {
+		bio_mapped = __bio_kmap_atomic(bio, i, KM_USER0);
+		page_mapped = kmap(line->buffers[j]);
+
+		memcpy(page_mapped, bio_mapped, PAGE_SIZE);
+
+		kunmap(line->buffers[j]);
+		__bio_kunmap_atomic(bio_mapped, KM_USER0);
+	}
 }
 
 static void raidxor_copy_bio_from_cache(cache_t *cache, unsigned int n_line,
 					struct bio *bio)
 {
+	/* bio->bi_sector is the offset into the line.
+	   every bio->bi_io_vec should be of size PAGE_SIZE */
+	struct bio_vec *bvl;
+	unsigned int i, j;
+	char *bio_mapped, *page_mapped;
+	sector_t offset;
+	cache_line_t *line;
 
+	offset = bio->bi_sector;
+	line = &cache->lines[n_line];
+
+	/* skip offset / some pages */
+	j = 0;
+	while (offset > 0) {
+		offset -= PAGE_SIZE >> 9;
+		++j;
+	}
+
+	bio_for_each_segment(bvl, bio, i) {
+		bio_mapped = __bio_kmap_atomic(bio, i, KM_USER0);
+		page_mapped = kmap(line->buffers[j]);
+
+		memcpy(bio_mapped, page_mapped, PAGE_SIZE);
+
+		kunmap(line->buffers[j]);
+		__bio_kunmap_atomic(bio_mapped, KM_USER0);
+	}
 }
 
 /**

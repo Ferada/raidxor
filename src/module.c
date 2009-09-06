@@ -68,7 +68,6 @@ static int raidxor_cache_make_load_me(cache_t *cache, unsigned int line,
 {
 #undef CHECK_RETURN_VALUE
 #define CHECK_RETURN_VALUE 1
-
 	CHECK_ARG_RET_VAL(cache);
 	CHECK_PLAIN_RET_VAL(line < cache->n_lines);
 
@@ -955,10 +954,12 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 
 
 	/* checked assumption is: aligned_sector is aligned to
-	   strip/cache line, bio->bi_sector is the offset inside this strip */
+	   strip/cache line, bio->bi_sector is the offset inside this strip
+	   (and aligned to PAGE_SIZE) */
 
 	CHECK_PLAIN(aligned_sector % (PAGE_SIZE >> 9) == 0);
 	CHECK_PLAIN(aligned_sector % strip_sectors == 0);
+	CHECK_PLAIN(bio->bi_sector % (PAGE_SIZE >> 9) == 0);
 
 	if (bio->bi_sector + (bio->bi_size >> 9) > strip_sectors) {
 		/* TODO: split bio */
