@@ -126,10 +126,14 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 		goto out_free_stripes;
 	conf->cache->conf = conf;
 
+	/* now a request is between 4096 and N_DATA_UNITS * CHUNK_SIZE bytes long */
 	printk(KERN_EMERG "and max sectors to %lu\n",
-	       PAGE_SIZE * stripes[0]->n_data_units / 512);
+	       (conf->chunk_size >> 9) * stripes[0]->n_data_units);
 	blk_queue_max_sectors(mddev->queue,
-			      PAGE_SIZE * stripes[0]->n_data_units / 512);
+			      (conf->chunk_size >> 9) * stripes[0]->n_data_units);
+	blk_queue_segment_boundary(mddev->queue,
+				   (conf->chunk_size >> 1) *
+				   stripes[0]->n_data_units - 1);
 
 	printk(KERN_INFO "setting device size\n");
 

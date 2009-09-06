@@ -109,16 +109,20 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 {
 #undef CHECK_JUMP_LABEL
 #define CHECK_JUMP_LABEL out
+	raidxor_conf_t *conf;
 	cache_line_t *line;
 	stripe_t *stripe;
+	/* sector inside the stripe */
 	sector_t actual_sector;
 	raidxor_bio_t *rxbio;
 	struct bio *bio;
 	unsigned int i, j, k, n_chunk_mult;
-	raidxor_conf_t *conf = cache->conf;
 
 	CHECK_ARG(cache);
 	CHECK_PLAIN(n < cache->n_lines);
+
+	conf = cache->conf;
+	CHECK_PLAIN(conf);
 
 	line = &cache->lines[n];
 	CHECK_PLAIN(line->status == CACHE_LINE_LOAD_ME);
@@ -126,8 +130,9 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 	stripe = raidxor_sector_to_stripe(conf, line->sector,
 					  &actual_sector);
 	CHECK_PLAIN(stripe);
+	/* unrecoverable error, abort */
 	CHECK_PLAIN(!test_bit(STRIPE_ERROR, &stripe->flags));
-	
+
 	rxbio = raidxor_alloc_bio(stripe->n_units);
 	CHECK_PLAIN(rxbio);
 #undef CHECK_JUMP_LABEL
@@ -149,8 +154,8 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 		bio->bi_private = rxbio;
 		bio->bi_bdev = stripe->units[i]->rdev->bdev;
 		bio->bi_end_io = raidxor_end_load_line;
-		/* TODO: correct sector */
-		bio->bi_sector = 42;
+		bio->bi_sector = actual_sector / stripe->n_data_units +
+			stripe->units[i]->rdev->data_offset;
 		bio->bi_size = n_chunk_mult * PAGE_SIZE;
 
 		/* assign page */
@@ -221,8 +226,8 @@ static int raidxor_cache_writeback_line(cache_t *cache, unsigned int n)
 		bio->bi_private = rxbio;
 		bio->bi_bdev = stripe->units[i]->rdev->bdev;
 		bio->bi_end_io = raidxor_end_writeback_line;
-		/* TODO: correct sector */
-		bio->bi_sector = 42;
+		bio->bi_sector = actual_sector / stripe->n_data_units +
+			stripe->units[i]->rdev->data_offset;
 		bio->bi_size = n_chunk_mult * PAGE_SIZE;
 
 		/* assign page */
