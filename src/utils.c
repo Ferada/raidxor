@@ -290,11 +290,11 @@ static void raidxor_copy_bio_to_cache(cache_t *cache, unsigned int n_line,
 
 	bio_for_each_segment(bvl, bio, i) {
 		bio_mapped = __bio_kmap_atomic(bio, i, KM_USER0);
-		page_mapped = kmap(line->buffers[j]);
+		page_mapped = kmap_atomic(line->buffers[j], KM_USER0);
 
 		memcpy(page_mapped, bio_mapped, PAGE_SIZE);
 
-		kunmap(line->buffers[j]);
+		kunmap_atomic(line->buffers[j], KM_USER0);
 		__bio_kunmap_atomic(bio_mapped, KM_USER0);
 	}
 }
@@ -322,11 +322,11 @@ static void raidxor_copy_bio_from_cache(cache_t *cache, unsigned int n_line,
 
 	bio_for_each_segment(bvl, bio, i) {
 		bio_mapped = __bio_kmap_atomic(bio, i, KM_USER0);
-		page_mapped = kmap(line->buffers[j]);
+		page_mapped = kmap_atomic(line->buffers[j], KM_USER0);
 
 		memcpy(bio_mapped, page_mapped, PAGE_SIZE);
 
-		kunmap(line->buffers[j]);
+		kunmap_atomic(line->buffers[j], KM_USER0);
 		__bio_kunmap_atomic(bio_mapped, KM_USER0);
 	}
 }
@@ -339,7 +339,7 @@ static void raidxor_copy_chunk_from_cache_line(raidxor_conf_t *conf,
 					       cache_line_t *line,
 					       unsigned int index)
 {
-
+	
 }
 
 /**
