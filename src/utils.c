@@ -72,33 +72,6 @@ static disk_info_t * raidxor_find_unit_conf_rdev(raidxor_conf_t *conf, mdk_rdev_
 }
 
 /**
- * raidxor_safe_free_conf() - frees resource and stripe information
- *
- * Must be called inside conf lock.
- */
-static void raidxor_safe_free_conf(raidxor_conf_t *conf) {
-	unsigned long i;
-
-	CHECK_ARG_RET(conf);
-
-	if (conf->resources != NULL) {
-		for (i = 0; i < conf->n_resources; ++i)
-			kfree(conf->resources[i]);
-		kfree(conf->resources);
-		conf->resources = NULL;
-	}
-
-	if (conf->stripes != NULL) {
-		for (i = 0; i < conf->n_stripes; ++i)
-			kfree(conf->stripes[i]);
-		kfree(conf->stripes);
-		conf->stripes = NULL;
-	}
-	
-	conf->configured = 0;
-}
-
-/**
  * free_bio() - puts all pages in a bio and the bio itself
  */
 static void free_bio(struct bio *bio)
@@ -204,6 +177,40 @@ static void raidxor_free_cache(cache_t *cache)
 	kfree(cache);
 }
 
+/**
+ * raidxor_safe_free_conf() - frees resource and stripe information
+ *
+ * Must be called inside conf lock.
+ */
+static void raidxor_safe_free_conf(raidxor_conf_t *conf) {
+	unsigned long i;
+
+	CHECK_ARG_RET(conf);
+
+	conf->configured = 0;
+
+	if (conf->resources != NULL) {
+		for (i = 0; i < conf->n_resources; ++i)
+			kfree(conf->resources[i]);
+		kfree(conf->resources);
+		conf->resources = NULL;
+	}
+
+	if (conf->stripes != NULL) {
+		for (i = 0; i < conf->n_stripes; ++i)
+			kfree(conf->stripes[i]);
+		kfree(conf->stripes);
+		conf->stripes = NULL;
+	}
+
+	raidxor_free_cache(conf->cache);
+
+	kfree(conf);
+}
+
+/**
+ * raidxor_copy_chunk_from_cache_line() - copies a chunk from cache to a bio
+ */
 static void raidxor_copy_chunk_from_cache_line(raidxor_conf_t *conf,
 					       struct bio *bio,
 					       cache_line_t *line,
@@ -212,6 +219,9 @@ static void raidxor_copy_chunk_from_cache_line(raidxor_conf_t *conf,
 
 }
 
+/**
+ * raidxor_copy_chunk_to_cache_line() - copies a chunk from a bio to cache
+ */
 static void raidxor_copy_chunk_to_cache_line(raidxor_conf_t *conf,
 					     struct bio *bio,
 					     cache_line_t *line,

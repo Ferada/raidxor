@@ -289,7 +289,6 @@ static void raidxor_end_load_line(struct bio *bio, int error)
 {
 #undef CHECK_JUMP_LABEL
 #define CHECK_JUMP_LABEL out
-	disk_info_t *unit;
 	raidxor_bio_t *rxbio;
 	raidxor_conf_t *conf;
 	cache_t *cache;
@@ -860,7 +859,6 @@ static int raidxor_stop(mddev_t *mddev)
 
 	mddev_to_conf(mddev) = NULL;
 	raidxor_safe_free_conf(conf);
-	kfree(conf);
 
 	return 0;
 }
