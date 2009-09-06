@@ -923,6 +923,12 @@ static void raidxor_align_sector_to_strip(raidxor_conf_t *conf,
 		*sector -= mod;
 }
 
+/**
+ * raidxor_check_bio_size_and_layout() - checks a bio for compatibility
+ *
+ * Checks whether the size is a multiple of PAGE_SIZE and each bio_vec
+ * is exactly one page long and has an offset of 0.
+ */
 static int raidxor_check_bio_size_and_layout(raidxor_conf_t *conf,
 					     struct bio *bio)
 {
