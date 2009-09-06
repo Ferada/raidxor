@@ -202,7 +202,7 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 			stripe->units[i]->rdev->data_offset;
 		bio->bi_size = n_chunk_mult * PAGE_SIZE;
 
-		/* assign page */
+		/* assign pages */
 		bio->bi_vcnt = n_chunk_mult;
 		for (j = 0; j < n_chunk_mult; ++j) {
 			if (stripe->units[i]->redundant)
@@ -229,7 +229,6 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 out_free_bio:
 	raidxor_free_bio(rxbio);
 out: __attribute__((unused))
-	/* bio_error the listed requests */
 	return 1;
 }
 
@@ -351,7 +350,8 @@ static void raidxor_end_load_line(struct bio *bio, int error)
 
 	if (error) {
 		WITHLOCKCONF(conf, {
-		line->status = CACHE_LINE_FAULTY;
+		if (!stripe->units[index]->redundant)
+			line->status = CACHE_LINE_FAULTY;
 		});
 		md_error(conf->mddev, stripe->units[index]->rdev);
 	}
