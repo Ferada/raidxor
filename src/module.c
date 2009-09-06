@@ -30,27 +30,36 @@ static int raidxor_cache_make_clean(cache_t *cache, unsigned int line)
 	return 0;
 }
 
-static int raidxor_cache_make_ready(cache_t *cache, unsigned int line)
+static int raidxor_cache_make_ready(cache_t *cache, unsigned int n_line)
 {
 #undef CHECK_RETURN_VALUE
 #define CHECK_RETURN_VALUE 1
 	unsigned int i;
+	cache_line_t *line;
 
 	CHECK_ARG_RET_VAL(cache);
-	CHECK_PLAIN_RET_VAL(line < cache->n_lines);
+	CHECK_PLAIN_RET_VAL(n_line < cache->n_lines);
 
-	if (cache->lines[line].status == CACHE_LINE_READY) return 0;
-	CHECK_PLAIN_RET_VAL(cache->lines[line].status == CACHE_LINE_CLEAN);
+	line = &cache->lines[n_line];
+	CHECK_PLAIN_RET_VAL(line);
 
-	cache->lines[line].status = CACHE_LINE_READY;
+	if (line->status == CACHE_LINE_READY) return 0;
+	CHECK_PLAIN_RET_VAL(line->status == CACHE_LINE_CLEAN || 
+			    line->status == CACHE_LINE_UPTODATE);
 
-	for (i = 0; i < cache->n_buffers; ++i)
-		if (!(cache->lines[line].buffers[i] = alloc_page(GFP_NOIO)))
-			goto out_free_pages;
+	if (line->status == CACHE_LINE_CLEAN) {
+		line->status = CACHE_LINE_READY;
+
+		for (i = 0; i < cache->n_buffers; ++i)
+			if (!(line->buffers[i] = alloc_page(GFP_NOIO)))
+				goto out_free_pages;
+	}
+
+	line->status = CACHE_LINE_READY;
 
 	return 0;
 out_free_pages:
-	raidxor_cache_make_clean(cache, line);
+	raidxor_cache_make_clean(cache, n_line);
 	return 1;
 }
 
@@ -72,6 +81,13 @@ static int raidxor_cache_make_load_me(cache_t *cache, unsigned int line,
 	return 0;
 }
 
+static void raidxor_cache_abort_line(cache_t *cache, unsigned int line)
+{
+	raidxor_cache_abort_requests(cache, line);
+	cache->lines[line].status = CACHE_LINE_UPTODATE;
+	raidxor_cache_make_ready(cache, line);
+}
+
 /**
  * raidxor_cache_recover() - tries to recover a cache line
  *
@@ -80,26 +96,36 @@ static int raidxor_cache_make_load_me(cache_t *cache, unsigned int line,
  */
 static void raidxor_cache_recover(cache_t *cache, unsigned int n_line)
 {
+#undef CHECK_JUMP_LABEL
+#define CHECK_JUMP_LABEL out
+	cache_line_t *line;
 	raidxor_conf_t *conf;
+	raidxor_bio_t *rxbio;
 
-	CHECK_ARG_RET(cache);
-	CHECK_PLAIN_RET(n_line < cache->n_lines);
+	CHECK_ARG(cache);
+	CHECK_PLAIN(n_line < cache->n_lines);
+
+	line = &cache->lines[n_line];
+	CHECK_PLAIN(line);
+
+	rxbio = line->rxbio;
+	CHECK_PLAIN(rxbio);
 
 	conf = cache->conf;
-	CHECK_PLAIN_RET(conf);
+	CHECK_PLAIN(conf);
 
-#if 0
-	if (!/* TODO: we have the equations */) return;
-#else
-	/* at the moment, we don't have decoding equations */
-	return;
-#endif
+	if (1 /* TODO: we have don't have the equations */) {
+		goto out;
+	}
 
-	cache->lines[n_line].status = CACHE_LINE_RECOVERY;
+	line->status = CACHE_LINE_RECOVERY;
 
 	/* TODO: do the recovery */
 
-	cache->lines[n_line].status = CACHE_LINE_UPTODATE;
+	line->status = CACHE_LINE_UPTODATE;
+out:
+	/* drop this line if an error occurs or we can't recover */
+	raidxor_cache_abort_line(cache, n_line);
 }
 
 static unsigned int raidxor_bio_index(raidxor_bio_t *rxbio,
@@ -187,6 +213,7 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 		}
 	}
 
+	line->rxbio = rxbio;
 	rxbio->remaining = stripe->n_data_units;
 	++cache->active_lines;
 	for (i = 0; i < rxbio->n_bios; ++i)
@@ -272,6 +299,7 @@ static int raidxor_cache_writeback_line(cache_t *cache, unsigned int n)
 			goto out_free_bio;
 	}
 
+	line->rxbio = rxbio;
 	rxbio->remaining = rxbio->n_bios;
 	++cache->active_lines;
 	for (i = 0; i < rxbio->n_bios; ++i)
@@ -329,13 +357,13 @@ static void raidxor_end_load_line(struct bio *bio, int error)
 
 	WITHLOCKCONF(conf, {
 	if ((--rxbio->remaining) == 0) {
-		if (line->status == CACHE_LINE_LOADING)
-			line->status = CACHE_LINE_UPTODATE;
-		else if (line->status == CACHE_LINE_FAULTY)
-			raidxor_cache_recover(cache, rxbio->line);
 		--rxbio->cache->active_lines;
+		if (line->status == CACHE_LINE_LOADING) {
+			line->status = CACHE_LINE_UPTODATE;
+			kfree(rxbio);
+			line->rxbio = NULL;
+		}
 		/* TODO: wake up waiting threads */
-		kfree(rxbio);
 	}
 	});
 }
@@ -384,11 +412,11 @@ static void raidxor_end_writeback_line(struct bio *bio, int error)
 
 	WITHLOCKCONF(conf, {
 	if ((--rxbio->remaining) == 0) {
-		if (line->status == CACHE_LINE_WRITEBACK)
-			line->status = CACHE_LINE_UPTODATE;
+		line->status = CACHE_LINE_UPTODATE;
 		--cache->active_lines;
 		/* TODO: wake up waiting threads */
 
+		line->rxbio = NULL;
 		kfree(rxbio);
 	}
 	});
@@ -609,7 +637,9 @@ static void raidxor_handle_requests(cache_t *cache, unsigned int n_line)
 
 	/* requests are added at back, so take from front and handle */
 	while ((bio = raidxor_cache_remove_request(cache, n_line))) {
-		/* TODO: copy data around */
+		if (bio_data_dir(bio) == WRITE)
+			raidxor_copy_bio_to_cache(cache, n_line, bio);
+		else raidxor_copy_bio_from_cache(cache, n_line, bio);
 
 		bio_endio(bio, 0);
 

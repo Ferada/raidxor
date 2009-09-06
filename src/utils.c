@@ -1,6 +1,56 @@
 /* -*- mode: c; coding: utf-8; c-file-style: "K&R"; tab-width: 8; indent-tabs-mode: t; -*- */
 
 /**
+ * raidxor_cache_add_request() - adds request at back
+ */
+static void raidxor_cache_add_request(cache_t *cache, unsigned int n_line,
+				      struct bio *bio)
+{
+	cache_line_t *line;
+	struct bio *previous;
+	CHECK_ARG_RET(cache);
+	CHECK_ARG_RET(bio);
+	CHECK_PLAIN_RET(n_line < cache->n_lines);
+
+	line = &cache->lines[n_line];
+	CHECK_PLAIN_RET(line);
+
+	previous = line->waiting;
+	if (!previous) {
+		line->waiting = bio;
+	}
+	else {
+		while (previous->bi_next) {
+			previous = previous->bi_next;
+		}
+
+		previous->bi_next = bio;
+	}
+}
+
+/**
+ * raidxor_cache_remove_request() - pops request from front
+ */
+static struct bio * raidxor_cache_remove_request(cache_t *cache,
+						 unsigned int n_line)
+{
+	struct bio *result;
+	cache_line_t *line;
+	CHECK_ARG_RET_NULL(cache);
+	CHECK_PLAIN_RET_NULL(n_line < cache->n_lines);
+
+	line = &cache->lines[n_line];
+	CHECK_PLAIN_RET_NULL(line);
+
+	result = line->waiting;
+	if (result) {
+		line->waiting = result->bi_next;
+	}
+
+	return result;
+}
+
+/**
  * raidxor_find_bio() - searches for the corresponding bio for a single unit
  *
  * Returns NULL if not found.
@@ -154,6 +204,15 @@ static cache_t * raidxor_alloc_cache(unsigned int n_lines, unsigned int n_buffer
 	return cache;
 }
 
+static void raidxor_cache_abort_requests(cache_t *cache, unsigned int line)
+{
+	struct bio *bio;
+
+	while ((bio = raidxor_cache_remove_request(cache, line))) {
+		bio_io_error(bio);
+	}
+}
+
 static void raidxor_cache_drop_line(cache_t *cache, unsigned int line)
 {
 	unsigned int i;
@@ -206,6 +265,18 @@ static void raidxor_safe_free_conf(raidxor_conf_t *conf) {
 	raidxor_free_cache(conf->cache);
 
 	kfree(conf);
+}
+
+static void raidxor_copy_bio_to_cache(cache_t *cache, unsigned int n_line,
+				      struct bio *bio)
+{
+	
+}
+
+static void raidxor_copy_bio_from_cache(cache_t *cache, unsigned int n_line,
+					struct bio *bio)
+{
+
 }
 
 /**
@@ -451,56 +522,6 @@ static int raidxor_bio_maybe_split_boundary(stripe_t *stripe, struct bio *bio,
 		return 1;
 	}
 	return 0;
-}
-
-/**
- * raidxor_cache_add_request() - adds request at back
- */
-static void raidxor_cache_add_request(cache_t *cache, unsigned int n_line,
-				      struct bio *bio)
-{
-	cache_line_t *line;
-	struct bio *previous;
-	CHECK_ARG_RET(cache);
-	CHECK_ARG_RET(bio);
-	CHECK_PLAIN_RET(n_line < cache->n_lines);
-
-	line = &cache->lines[n_line];
-	CHECK_PLAIN_RET(line);
-
-	previous = line->waiting;
-	if (!previous) {
-		line->waiting = bio;
-	}
-	else {
-		while (previous->bi_next) {
-			previous = previous->bi_next;
-		}
-
-		previous->bi_next = bio;
-	}
-}
-
-/**
- * raidxor_cache_remove_request() - pops request from front
- */
-static struct bio * raidxor_cache_remove_request(cache_t *cache,
-						 unsigned int n_line)
-{
-	struct bio *result;
-	cache_line_t *line;
-	CHECK_ARG_RET_NULL(cache);
-	CHECK_PLAIN_RET_NULL(n_line < cache->n_lines);
-
-	line = &cache->lines[n_line];
-	CHECK_PLAIN_RET_NULL(line);
-
-	result = line->waiting;
-	if (result) {
-		line->waiting = result->bi_next;
-	}
-
-	return result;
 }
 
 /**

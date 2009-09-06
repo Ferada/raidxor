@@ -29,6 +29,7 @@ struct cache_line {
 	unsigned long status;
 	sector_t sector;
 
+	raidxor_bio_t *rxbio;
 	struct bio *waiting;
 
 	struct page *buffers[0];
