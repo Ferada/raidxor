@@ -393,20 +393,6 @@ static stripe_t * raidxor_sector_to_stripe(raidxor_conf_t *conf, sector_t sector
 	return stripes[i];
 }
 
-static int raidxor_bio_maybe_split_boundary(stripe_t *stripe, struct bio *bio,
-					    sector_t newsector,
-					    struct bio_pair **split)
-{
-	unsigned long result = stripe->size - (newsector << 9);
-	if (result < bio->bi_size) {
-		/* FIXME: what should first_sectors really be? */
-		//*split = bio_split(bio, NULL, result);
-		*split = NULL;
-		return 1;
-	}
-	return 0;
-}
-
 /**
  * raidxor_cache_find_line() - finds a matching or otherwise available line
  *

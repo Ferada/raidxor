@@ -80,6 +80,11 @@ static int raidxor_cache_make_load_me(cache_t *cache, unsigned int line,
 	return 0;
 }
 
+/**
+ * raidxor_cache_abort_line() - aborts a line
+ *
+ * Aborts all waiting requests, drops sector information and marks READY.
+ */
 static void raidxor_cache_abort_line(cache_t *cache, unsigned int line)
 {
 	raidxor_cache_abort_requests(cache, line);
@@ -604,12 +609,7 @@ static void raidxor_finish_lines(cache_t *cache)
 	}
 
 	cache->n_waiting -= freed;
-	if (freed > 0) {
-		/* TODO: wakeup waiting processes */
-#if 0
-		wake_up(&cache->wait_for_line);
-#endif
-	}
+	if (freed > 0) raidxor_signal_empty_line(conf);
 }
 
 /**
@@ -733,8 +733,7 @@ static void raidxord(mddev_t *mddev)
 		   for done above, so if we're done working on those lines
 		   and we free two lines afterwards, the waiting processes
 		   are notified and signal us back later on */
-		if (cache->n_waiting > 0)
-			raidxor_finish_lines(cache);
+		if (cache->n_waiting > 0) raidxor_finish_lines(cache);
 
 		/* give others the chance to do something */
 		UNLOCKCONF(conf);
@@ -869,13 +868,8 @@ static int raidxor_stop(mddev_t *mddev)
 
 	WITHLOCKCONF(conf, {
 	set_bit(CONF_STOPPING, &conf->flags);
+	raidxor_wait_for_no_active_lines(conf);
 	});
-
-#if 0
-	wait_event_lock_irq(conf->wait_for_line,
-			    atomic_read(&conf->cache->active_lines) == 0,
-			    conf->device_lock, /* nothing */);
-#endif
 
 	md_unregister_thread(mddev->thread);
 	mddev->thread = NULL;
@@ -945,6 +939,41 @@ static int raidxor_check_bio_size_and_layout(raidxor_conf_t *conf,
 	return 0;
 }
 
+/**
+ * raidxor_wait_for_no_active_lines() - waits until no lines are active
+ *
+ * Needs to be called with conf->device_lock held.
+ */
+static void raidxor_wait_for_no_active_lines(raidxor_conf_t *conf)
+{
+	wait_event_lock_irq(conf->wait_for_line,
+			    atomic_read(&conf->cache->active_lines) == 0,
+			    conf->device_lock, /* nothing */);
+}
+
+/**
+ * raidxor_wait_for_empty_line() - blocks until a cache line is available
+ *
+ * Needs to be called with conf->device_lock held.
+ */
+static void raidxor_wait_for_empty_line(raidxor_conf_t *conf)
+{
+	CHECK_ARG_RET(conf);
+	++cache->n_waiting;
+	/* cache->wait_for_line; */
+}
+
+/**
+ * raidxor_signal_empty_line() - signals the cache line available signal
+ *
+ * Needs to be called with conf->device_lock held.
+ */
+static void raidxor_signal_empty_line(raidxor_conf_t *conf)
+{
+	CHECK_ARG_RET(conf);
+	wake_up(&conf->cache->wait_for_line);
+}
+
 static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 {
 	mddev_t *mddev;
@@ -974,6 +1003,9 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 	WITHLOCKCONF(conf, {
 #undef CHECK_JUMP_LABEL
 #define CHECK_JUMP_LABEL out_unlock
+
+	if (test_bit(CONF_STOPPING, &conf->flags))
+		goto out_unlock;
 
 	CHECK_PLAIN(!raidxor_check_bio_size_and_layout(conf, bio));
 
@@ -1016,10 +1048,10 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 		if (test_bit(STRIPE_ERROR, &stripe->flags))
 			goto out_unlock;
 
-		/* TODO: else if no line is available, wait for it ... */
-		++cache->n_waiting;
-		/* cache->wait_for_line; */
-		/* TODO: detect CONF_STOPPING */
+		raidxor_wait_for_empty_line();
+
+		if (test_bit(CONF_STOPPING, &conf->flags))
+			goto out_unlock;
 	}
 
 	if (cache->lines[line].status == CACHE_LINE_CLEAN ||
