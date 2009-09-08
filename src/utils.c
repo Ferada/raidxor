@@ -69,46 +69,8 @@ static struct bio * raidxor_find_bio(raidxor_bio_t *rxbio, disk_info_t *unit)
 	return NULL;
 }
 
-/**
- * raidxor_find_unit() - searches the corresponding unit for a rdev
- *
- * Returns NULL if not found.
- */
-static disk_info_t * raidxor_find_unit_bdev(stripe_t *stripe,
-					    struct block_device *bdev)
-{
-	unsigned long i;
-
-	CHECK_ARG_RET_NULL(stripe);
-	CHECK_ARG_RET_NULL(bdev);
-
-	for (i = 0; i < stripe->n_units; ++i)
-		if (stripe->units[i]->rdev->bdev == bdev)
-			return stripe->units[i];
-	return NULL;
-}
-
-/**
- * raidxor_find_unit() - searches the corresponding unit for a rdev
- *
- * Returns NULL if not found.
- */
-static disk_info_t * raidxor_find_unit_rdev(stripe_t *stripe, mdk_rdev_t *rdev)
-{
-	return raidxor_find_unit_bdev(stripe, rdev->bdev);
-}
-
-/**
- * raidxor_find_unit() - searches the corresponding unit for a single bio
- *
- * Returns NULL if not found.
- */
-static disk_info_t * raidxor_find_unit_bio(stripe_t *stripe, struct bio *bio)
-{
-	return raidxor_find_unit_bdev(stripe, bio->bi_bdev);
-}
-
-static disk_info_t * raidxor_find_unit_conf_rdev(raidxor_conf_t *conf, mdk_rdev_t *rdev)
+static disk_info_t * raidxor_find_unit_conf_rdev(raidxor_conf_t *conf,
+						 mdk_rdev_t *rdev)
 {
 	unsigned int i;
 
@@ -425,6 +387,71 @@ static int raidxor_cache_find_line(cache_t *cache, sector_t sector,
 	}
 
 	return 0;
+}
+
+static unsigned int raidxor_cache_empty_lines(cache_t *cache)
+{
+	unsigned int i;
+	unsigned result = 0;
+
+#undef CHECK_RETURN_VALUE
+#define CHECK_RETURN_VALUE 0
+	CHECK_ARG_RET_VAL(cache);
+
+	for (i = 0; i < cache->n_lines; ++i)
+		if (cache->lines[i].status == CACHE_LINE_CLEAN ||
+		    cache->lines[i].status == CACHE_LINE_READY) {
+			++result;
+		}
+
+	return result;
+}
+
+/**
+ * raidxor_wait_for_no_active_lines() - waits until no lines are active
+ *
+ * Needs to be called with conf->device_lock held.
+ */
+static void raidxor_wait_for_no_active_lines(raidxor_conf_t *conf)
+{
+	CHECK_ARG_RET(conf);
+
+	wait_event_lock_irq(conf->cache->wait_for_line,
+			    conf->cache->active_lines == 0,
+			    conf->device_lock, /* nothing */);
+}
+
+/**
+ * raidxor_wait_for_empty_line() - blocks until a cache line is available
+ *
+ * Needs to be called with conf->device_lock held.
+ *
+ * Also stops if CONF_STOPPING is set (but you've to test for that
+ * condition nevertheless.
+ */
+static void raidxor_wait_for_empty_line(raidxor_conf_t *conf)
+{
+	CHECK_ARG_RET(conf);
+
+	/* signal raidxord to free some lines */
+	++conf->cache->n_waiting;
+
+	wait_event_lock_irq(conf->cache->wait_for_line,
+			    raidxor_cache_empty_lines(conf->cache) > 0 ||
+			    test_bit(CONF_STOPPING, &conf->flags),
+			    conf->device_lock, /* nothing */);
+}
+
+/**
+ * raidxor_signal_empty_line() - signals the cache line available signal
+ *
+ * Needs to be called with conf->device_lock held.
+ */
+static void raidxor_signal_empty_line(raidxor_conf_t *conf)
+{
+	CHECK_ARG_RET(conf);
+
+	wake_up(&conf->cache->wait_for_line);
 }
 
 #if 0
