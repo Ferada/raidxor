@@ -203,8 +203,13 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 		bio->bi_private = rxbio;
 		bio->bi_bdev = stripe->units[i]->rdev->bdev;
 		bio->bi_end_io = raidxor_end_load_line;
-		bio->bi_sector = actual_sector / stripe->n_data_units +
-			stripe->units[i]->rdev->data_offset;
+
+		/* bio->bi_sector = actual_sector / stripe->n_data_units + */
+		/* 	stripe->units[i]->rdev->data_offset; */
+		bio->bi_sector = actual_sector;
+		do_div(bio->bi_sector, stripe->n_data_units);
+		bio->bi_sector += stripe->units[i]->rdev->data_offset;
+
 		bio->bi_size = n_chunk_mult * PAGE_SIZE;
 
 		/* assign pages */
