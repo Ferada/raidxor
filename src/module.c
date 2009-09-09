@@ -910,6 +910,7 @@ static void raidxor_align_sector_to_strip(raidxor_conf_t *conf,
 					  sector_t *sector)
 {
 	sector_t strip_sectors;
+	sector_t div;
 	sector_t mod;
 
 	CHECK_ARG_RET(conf);
@@ -918,7 +919,9 @@ static void raidxor_align_sector_to_strip(raidxor_conf_t *conf,
 
 	strip_sectors = (conf->chunk_size >> 9) * stripe->n_data_units;
 
-	mod = *sector % strip_sectors;
+	/* mod = *sector % strip_sectors; */
+	div = *sector;
+	mod = do_div(div, strip_sectors);
 
 	if (mod != 0)
 		*sector -= mod;
@@ -935,8 +938,12 @@ static int raidxor_check_bio_size_and_layout(raidxor_conf_t *conf,
 {
 	unsigned int i;
 	struct bio_vec *bvl;
+	sector_t div, mod;
 
-	if ((bio->bi_size % PAGE_SIZE) != 0)
+	div = bio->bi_size;
+	mod = do_div(div, PAGE_SIZE);
+
+	if (mod != 0)
 		return 1;
 
 	bio_for_each_segment(bvl, bio, i) {
@@ -958,7 +965,7 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 	stripe_t *stripe;
 	struct bio_pair *split;
 	unsigned int line;
-	sector_t aligned_sector, strip_sectors;
+	sector_t aligned_sector, strip_sectors, mod, div;
 
 #undef CHECK_JUMP_LABEL
 #define CHECK_JUMP_LABEL out
@@ -1003,9 +1010,17 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 	   strip/cache line, bio->bi_sector is the offset inside this strip
 	   (and aligned to PAGE_SIZE) */
 
-	CHECK_PLAIN(aligned_sector % (PAGE_SIZE >> 9) == 0);
-	CHECK_PLAIN(aligned_sector % strip_sectors == 0);
-	CHECK_PLAIN(bio->bi_sector % (PAGE_SIZE >> 9) == 0);
+	div = aligned_sector;
+	mod = do_div(div, PAGE_SIZE >> 9);
+	CHECK_PLAIN(mod == 0);
+
+	div = aligned_sector;
+	mod = do_div(div, strip_sectors);
+	CHECK_PLAIN(mod == 0);
+
+	div = bio->bi_sector;
+	mod = do_div(div, PAGE_SIZE >> 9);
+	CHECK_PLAIN(mod == 0);
 
 	if (bio->bi_sector + (bio->bi_size >> 9) > strip_sectors) {
 		/* TODO: split bio */
