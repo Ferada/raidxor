@@ -329,10 +329,8 @@ struct raidxor_bio {
 	unsigned int line;
 
 	stripe_t *stripe;
-	sector_t sector;
-	unsigned long length;
 
-	unsigned long n_bios;
+	unsigned int n_bios;
 	struct bio *bios[0];
 };
 
@@ -396,9 +394,14 @@ struct raidxor_bio {
 #define CHECK_ALLOC_RET_NULL(var) \
 	CHECK_RET_NULL(var, CHECK_ALLOC_MESSAGE #var)
 
-#define CHECK_BUG(message)					  \
+#define CHECK_BUG(message) \
 	printk(CHECK_LEVEL "raidxor: BUG at %s:%i: %s\n", \
 	       __FILE__, __LINE__, message)
+
+#define CHECK_LINE \
+	printk(CHECK_LEVEL "raidxor: %s:%i\n", __FILE__, __LINE__)
+#define CHECK_FUN(fun) \
+	printk(CHECK_LEVEL "raidxor: %s:%i: %s\n", __FILE__, __LINE__, #fun)
 
 #endif
 

@@ -1,5 +1,33 @@
 /* -*- mode: c; coding: utf-8; c-file-style: "K&R"; tab-width: 8; indent-tabs-mode: t; -*- */
 
+static const char * raidxor_cache_line_status(cache_line_t *line)
+{
+	CHECK_ARG_RET_NULL(line);
+
+	switch (line->status) {
+	case CACHE_LINE_CLEAN:
+		return "CACHE_LINE_CLEAN";
+	case CACHE_LINE_READY:
+		return "CACHE_LINE_CLEAN";
+	case CACHE_LINE_LOAD_ME:
+		return "CACHE_LINE_LOAD_ME";
+	case CACHE_LINE_LOADING:
+		return "CACHE_LINE_LOADING";
+	case CACHE_LINE_UPTODATE:
+		return "CACHE_LINE_UPTODATE";
+	case CACHE_LINE_DIRTY:
+		return "CACHE_LINE_DIRTY";
+	case CACHE_LINE_WRITEBACK:
+		return "CACHE_LINE_WRITEBACK";
+	case CACHE_LINE_FAULTY:
+		return "CACHE_LINE_FAULTY";
+	case CACHE_LINE_RECOVERY:
+		return "CACHE_LINE_RECOVERY";
+	}
+
+	return "UNKNOWN!";
+}
+
 /**
  * raidxor_cache_add_request() - adds request at back
  */
@@ -450,6 +478,18 @@ static void raidxor_signal_empty_line(raidxor_conf_t *conf)
 	CHECK_ARG_RET(conf);
 
 	wake_up(&conf->cache->wait_for_line);
+}
+
+/**
+ * raidxor_wakeup_thread() - wakes the associated kernel thread
+ *
+ * Whenever we need something done, this will (re-)start the kernel thread
+ * (see raidxord()).
+ */
+static void raidxor_wakeup_thread(raidxor_conf_t *conf)
+{
+	CHECK_ARG_RET(conf);
+	md_wakeup_thread(conf->mddev->thread);
 }
 
 #if 0

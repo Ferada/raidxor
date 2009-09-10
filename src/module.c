@@ -16,6 +16,8 @@
 
 static int raidxor_cache_make_clean(cache_t *cache, unsigned int line)
 {
+ 	CHECK_FUN(raidxor_cache_make_clean);
+
 #undef CHECK_RETURN_VALUE
 #define CHECK_RETURN_VALUE 1
 	CHECK_ARG_RET_VAL(cache);
@@ -37,11 +39,15 @@ static int raidxor_cache_make_ready(cache_t *cache, unsigned int n_line)
 	unsigned int i;
 	cache_line_t *line;
 
+ 	CHECK_FUN(raidxor_cache_make_ready);
+
 	CHECK_ARG_RET_VAL(cache);
 	CHECK_PLAIN_RET_VAL(n_line < cache->n_lines);
 
 	line = &cache->lines[n_line];
 	CHECK_PLAIN_RET_VAL(line);
+
+	printk(KERN_EMERG "line status was %s\n", raidxor_cache_line_status(line));
 
 	if (line->status == CACHE_LINE_READY) return 0;
 	CHECK_PLAIN_RET_VAL(line->status == CACHE_LINE_CLEAN || 
@@ -55,8 +61,6 @@ static int raidxor_cache_make_ready(cache_t *cache, unsigned int n_line)
 				goto out_free_pages;
 	}
 
-	line->status = CACHE_LINE_READY;
-
 	return 0;
 out_free_pages:
 	raidxor_cache_make_clean(cache, n_line);
@@ -66,6 +70,8 @@ out_free_pages:
 static int raidxor_cache_make_load_me(cache_t *cache, unsigned int line,
 				      sector_t sector)
 {
+	CHECK_FUN(raidxor_cache_make_load_me);
+
 #undef CHECK_RETURN_VALUE
 #define CHECK_RETURN_VALUE 1
 	CHECK_ARG_RET_VAL(cache);
@@ -167,6 +173,8 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 	struct bio *bio;
 	unsigned int i, j, k, l, n_chunk_mult;
 
+ 	CHECK_FUN(raidxor_cache_load_line);
+
 	CHECK_ARG(cache);
 	CHECK_PLAIN(n < cache->n_lines);
 
@@ -186,6 +194,9 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 	CHECK_PLAIN(rxbio);
 #undef CHECK_JUMP_LABEL
 #define CHECK_JUMP_LABEL out_free_bio
+
+	rxbio->cache = cache;
+	rxbio->stripe = stripe;
 
 	n_chunk_mult = cache->n_chunk_mult;
 
@@ -212,28 +223,47 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 
 		bio->bi_size = n_chunk_mult * PAGE_SIZE;
 
+		printk(KERN_EMERG "cache->n_buffers = %d, n_red_buffers = %d\n",
+		       cache->n_buffers, cache->n_red_buffers);
 		/* assign pages */
 		bio->bi_vcnt = n_chunk_mult;
 		for (j = 0; j < n_chunk_mult; ++j) {
-			if (stripe->units[i]->redundant)
-				k = cache->n_red_buffers + l * n_chunk_mult + j;
-			else
+
+			if (stripe->units[i]->redundant) {
+				k = cache->n_buffers + l * n_chunk_mult + j;
+				printk(KERN_EMERG "[%d], red k = %d\n", j, k);
+			}
+			else {
 				k = i * n_chunk_mult + j;
-			bio->bi_io_vec[k].bv_page = line->buffers[k];
-			bio->bi_io_vec[k].bv_len = PAGE_SIZE;
-			bio->bi_io_vec[k].bv_offset = 0;
+				printk(KERN_EMERG "[%d], nonred k = %d\n", j, k);
+			}
+
+			CHECK_PLAIN(line->buffers[k]);
+			bio->bi_io_vec[j].bv_page = line->buffers[k];
+
+			bio->bi_io_vec[j].bv_len = PAGE_SIZE;
+			bio->bi_io_vec[j].bv_offset = 0;
 		}
 
 		if (stripe->units[i]->redundant)
 			++l;
 	}
 
+ 	CHECK_LINE;
+
 	line->rxbio = rxbio;
-	rxbio->remaining = stripe->n_data_units;
+	rxbio->remaining = rxbio->n_bios;
 	++cache->active_lines;
+
+	printk(KERN_EMERG "with %d bios\n", rxbio->n_bios);
+
 	for (i = 0; i < rxbio->n_bios; ++i)
-		if (rxbio->bios[i])
+		if (rxbio->bios[i]) {
+			CHECK_LINE;
 			generic_make_request(rxbio->bios[i]);
+		}
+
+	line->status = CACHE_LINE_LOADING;
 
 	return 0;
 out_free_bio:
@@ -254,6 +284,8 @@ static int raidxor_cache_writeback_line(cache_t *cache, unsigned int n)
 	struct bio *bio;
 	raidxor_conf_t *conf = cache->conf;
 
+ 	CHECK_FUN(raidxor_cache_writeback_line);
+
 	CHECK_ARG(cache);
 	CHECK_PLAIN(n < cache->n_lines);
 
@@ -268,6 +300,9 @@ static int raidxor_cache_writeback_line(cache_t *cache, unsigned int n)
 	CHECK_PLAIN(rxbio);
 #undef CHECK_JUMP_LABEL
 #define CHECK_JUMP_LABEL out_free_bio
+
+	rxbio->cache = cache;
+	rxbio->stripe = stripe;
 
 	n_chunk_mult = cache->n_chunk_mult;
 
@@ -321,6 +356,7 @@ static int raidxor_cache_writeback_line(cache_t *cache, unsigned int n)
 	line->rxbio = rxbio;
 	rxbio->remaining = rxbio->n_bios;
 	++cache->active_lines;
+
 	for (i = 0; i < rxbio->n_bios; ++i)
 		if (rxbio->bios[i])
 			generic_make_request(rxbio->bios[i]);
@@ -343,6 +379,8 @@ static void raidxor_end_load_line(struct bio *bio, int error)
 	stripe_t *stripe;
 	unsigned int index, data_index;
 
+ 	CHECK_LINE;
+
 	CHECK_ARG_RET(bio);
 
 	rxbio = (raidxor_bio_t *)(bio->bi_private);
@@ -363,6 +401,8 @@ static void raidxor_end_load_line(struct bio *bio, int error)
 
 	index = raidxor_bio_index(rxbio, bio, &data_index);
 
+	CHECK_LINE;
+
 	if (error) {
 		WITHLOCKCONF(conf, {
 		if (!stripe->units[index]->redundant)
@@ -371,15 +411,17 @@ static void raidxor_end_load_line(struct bio *bio, int error)
 		md_error(conf->mddev, stripe->units[index]->rdev);
 	}
 
+	CHECK_LINE;
+
 	WITHLOCKCONF(conf, {
 	if ((--rxbio->remaining) == 0) {
 		if (line->status == CACHE_LINE_LOADING) {
 			line->status = CACHE_LINE_UPTODATE;
-			kfree(rxbio);
 			line->rxbio = NULL;
+			kfree(rxbio);
 		}
-		--rxbio->cache->active_lines;
-		/* TODO: wake up waiting threads */
+		--cache->active_lines;
+		raidxor_wakeup_thread(conf);
 	}
 	});
 }
@@ -422,12 +464,12 @@ static void raidxor_end_writeback_line(struct bio *bio, int error)
 	WITHLOCKCONF(conf, {
 	if ((--rxbio->remaining) == 0) {
 		line->status = CACHE_LINE_UPTODATE;
-		/* TODO: wake up waiting threads */
 
 		line->rxbio = NULL;
 		kfree(rxbio);
 
 		--cache->active_lines;
+		raidxor_wakeup_thread(conf);
 	}
 	});
 }
@@ -734,8 +776,10 @@ static void raidxord(mddev_t *mddev)
 		   can be handled */
 		for (i = 0, done = 1; i < cache->n_lines; ++i) {
 			/* only break if we have handled at least one line */
-			if (raidxor_handle_line(cache, i))
+			if (raidxor_handle_line(cache, i)) {
+				++handled;
 				done = 0;
+			}
 		}
 
 		/* also, if somebody is waiting for a free line, try to make
@@ -746,9 +790,11 @@ static void raidxord(mddev_t *mddev)
 		if (cache->n_waiting > 0) raidxor_finish_lines(cache);
 
 		/* give others the chance to do something */
+#if 0
 		UNLOCKCONF(conf);
 		schedule(); /* TODO: correct? */
 		LOCKCONF(conf);
+#endif
 	}
 	});
 
@@ -892,18 +938,6 @@ static int raidxor_stop(mddev_t *mddev)
 	kfree(conf);
 
 	return 0;
-}
-
-/**
- * raidxor_wakeup_thread() - wakes the associated kernel thread
- *
- * Whenever we need something done, this will (re-)start the kernel thread
- * (see raidxord()).
- */
-static void raidxor_wakeup_thread(raidxor_conf_t *conf)
-{
-	CHECK_ARG_RET(conf);
-	md_wakeup_thread(conf->mddev->thread);
 }
 
 static void raidxor_align_sector_to_strip(raidxor_conf_t *conf,
@@ -1050,8 +1084,8 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 	if (cache->lines[line].status == CACHE_LINE_CLEAN ||
 	    cache->lines[line].status == CACHE_LINE_READY)
 	{
-		raidxor_cache_make_ready(cache, line);
-		raidxor_cache_make_load_me(cache, line, aligned_sector);
+		CHECK_PLAIN(!raidxor_cache_make_ready(cache, line));
+		CHECK_PLAIN(!raidxor_cache_make_load_me(cache, line, aligned_sector));
 	}
 	/* TODO: which states are unacceptable? */
 	/* pack the request somewhere in the cache */
