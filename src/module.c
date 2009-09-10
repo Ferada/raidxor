@@ -333,13 +333,18 @@ static int raidxor_cache_writeback_line(cache_t *cache, unsigned int n)
 		bio->bi_vcnt = n_chunk_mult;
 		/* assign pages */
 		for (j = 0; j < n_chunk_mult; ++j) {
-			if (stripe->units[i]->redundant)
-				k = cache->n_red_buffers + l * n_chunk_mult + j;
-			else
+			if (stripe->units[i]->redundant) {
+				k = cache->n_buffers + l * n_chunk_mult + j;
+				printk(KERN_EMERG "[%d], red k = %d\n", j, k);
+			}
+			else {
 				k = i * n_chunk_mult + j;
-			bio->bi_io_vec[k].bv_page = line->buffers[k];
-			bio->bi_io_vec[k].bv_len = PAGE_SIZE;
-			bio->bi_io_vec[k].bv_offset = 0;
+				printk(KERN_EMERG "[%d], nonred k = %d\n", j, k);
+			}
+
+			bio->bi_io_vec[j].bv_page = line->buffers[k];
+			bio->bi_io_vec[j].bv_len = PAGE_SIZE;
+			bio->bi_io_vec[j].bv_offset = 0;
 		}
 
 		if (stripe->units[i]->redundant)
@@ -360,6 +365,8 @@ static int raidxor_cache_writeback_line(cache_t *cache, unsigned int n)
 	for (i = 0; i < rxbio->n_bios; ++i)
 		if (rxbio->bios[i])
 			generic_make_request(rxbio->bios[i]);
+
+	line->status = CACHE_LINE_WRITEBACK;
 
 	return 0;
 out_free_bio:

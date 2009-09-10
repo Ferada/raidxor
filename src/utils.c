@@ -273,6 +273,8 @@ static void raidxor_copy_bio_to_cache(cache_t *cache, unsigned int n_line,
 	sector_t offset;
 	cache_line_t *line;
 
+	CHECK_FUN(raidxor_copy_bio_to_cache);
+
 	offset = bio->bi_sector;
 	line = &cache->lines[n_line];
 
@@ -307,6 +309,8 @@ static void raidxor_copy_bio_from_cache(cache_t *cache, unsigned int n_line,
 	char *bio_mapped, *page_mapped;
 	sector_t offset;
 	cache_line_t *line;
+
+	CHECK_FUN(raidxor_copy_bio_from_cache);
 
 	offset = bio->bi_sector;
 	line = &cache->lines[n_line];
