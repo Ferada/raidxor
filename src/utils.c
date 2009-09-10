@@ -228,9 +228,7 @@ static void raidxor_safe_free_conf(raidxor_conf_t *conf) {
 		conf->stripes = NULL;
 	}
 
-	raidxor_free_cache(conf->cache);
-
-	kfree(conf);
+	if (conf->cache != NULL) raidxor_free_cache(conf->cache);
 }
 
 /**

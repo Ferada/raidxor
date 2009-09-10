@@ -726,7 +726,7 @@ static void raidxord(mddev_t *mddev)
 	CHECK_PLAIN_RET(cache);
 
 	/* someone poked us.  see what we can do */
-	printk(KERN_INFO "raidxor: raidxord active\n");
+	printk(KERN_EMERG "raidxor: raidxord active\n");
 
 	WITHLOCKCONF(conf, {
 	for (; !test_bit(CONF_STOPPING, &conf->flags) && !done;) {
@@ -752,7 +752,7 @@ static void raidxord(mddev_t *mddev)
 	}
 	});
 
-	printk(KERN_INFO "raidxor: thread inactive, %u requests\n", handled);
+	printk(KERN_EMERG "raidxor: thread inactive, %u requests\n", handled);
 }
 
 /**
@@ -772,19 +772,19 @@ static int raidxor_run(mddev_t *mddev)
 	unsigned long i;
 
 	if (mddev->level != LEVEL_XOR) {
-		printk(KERN_ERR "raidxor: %s: raid level not set to xor (%d)\n",
+		printk(KERN_EMERG "raidxor: %s: raid level not set to xor (%d)\n",
 		       mdname(mddev), mddev->level);
 		goto out_inval;
 	}
 
 	if (mddev->chunk_size < PAGE_SIZE) {
-		printk(KERN_ERR "raidxor: chunk_size must be at least "
+		printk(KERN_EMERG "raidxor: chunk_size must be at least "
 		       "PAGE_SIZE but %d < %ld\n",
 		       mddev->chunk_size, PAGE_SIZE);
 		goto out_inval;
 	}
 
-	printk(KERN_INFO "raidxor: raid set %s active with %d disks\n",
+	printk(KERN_EMERG "raidxor: raid set %s active with %d disks\n",
 	       mdname(mddev), mddev->raid_disks);
 
 	if (mddev->raid_disks < 1)
@@ -794,7 +794,7 @@ static int raidxor_run(mddev_t *mddev)
 		       sizeof(struct disk_info) * mddev->raid_disks, GFP_KERNEL);
 	mddev->private = conf;
 	if (!conf) {
-		printk(KERN_ERR "raidxor: couldn't allocate memory for %s\n",
+		printk(KERN_EMERG "raidxor: couldn't allocate memory for %s\n",
 		       mdname(mddev));
 		goto out;
 	}
@@ -821,7 +821,7 @@ static int raidxor_run(mddev_t *mddev)
 	rdev_for_each(rdev, tmp, mddev) {
 		size = min(size, rdev->size);
 
-		printk(KERN_INFO "raidxor: device %lu rdev %s, %llu blocks\n",
+		printk(KERN_EMERG "raidxor: device %lu rdev %s, %llu blocks\n",
 		       i, bdevname(rdev->bdev, buffer),
 		       (unsigned long long) rdev->size * 2);
 		conf->units[i].rdev = rdev;
@@ -832,7 +832,7 @@ static int raidxor_run(mddev_t *mddev)
 	if (size == -1)
 		goto out_free_conf;
 
-	printk(KERN_INFO "raidxor: used component size: %llu sectors\n",
+	printk(KERN_EMERG "raidxor: used component size: %llu sectors\n",
 	       (unsigned long long) size & ~(conf->chunk_size / 1024 - 1));
 
 	/* used component size in sectors, multiple of chunk_size ... */
@@ -842,7 +842,7 @@ static int raidxor_run(mddev_t *mddev)
 
 	/* Ok, everything is just fine now */
 	if (sysfs_create_group(&mddev->kobj, &raidxor_attrs_group)) {
-		printk(KERN_ERR
+		printk(KERN_EMERG
 		       "raidxor: failed to create sysfs attributes for %s\n",
 		       mdname(mddev));
 		goto out_free_conf;
@@ -850,7 +850,7 @@ static int raidxor_run(mddev_t *mddev)
 
 	mddev->thread = md_register_thread(raidxord, mddev, "%s_raidxor");
 	if (!mddev->thread) {
-		printk(KERN_ERR
+		printk(KERN_EMERG
 		       "raidxor: couldn't allocate thread for %s\n",
 		       mdname(mddev));
 		goto out_free_sysfs;
@@ -889,6 +889,7 @@ static int raidxor_stop(mddev_t *mddev)
 
 	mddev_to_conf(mddev) = NULL;
 	raidxor_safe_free_conf(conf);
+	kfree(conf);
 
 	return 0;
 }
