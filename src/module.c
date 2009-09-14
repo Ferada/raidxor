@@ -55,12 +55,15 @@ static int raidxor_cache_make_ready(cache_t *cache, unsigned int n_line)
 
 	if (line->status == CACHE_LINE_CLEAN)
 		for (i = 0; i < cache->n_buffers + cache->n_red_buffers; ++i)
-			if (!(line->buffers[i] = alloc_page(GFP_NOIO)))
+			if (!(line->buffers[i] = alloc_page(GFP_NOIO))) {
+				printk(KERN_EMERG "page allocation failed for line %u\n", n_line);
 				goto out_free_pages;
+			}
 	line->status = CACHE_LINE_READY;
 
 	return 0;
 out_free_pages:
+	line->status = CACHE_LINE_READY;
 	raidxor_cache_make_clean(cache, n_line);
 	return 1;
 }
@@ -155,6 +158,24 @@ static unsigned int raidxor_bio_index(raidxor_bio_t *rxbio,
 	return 0;
 }
 
+static void raidxor_cache_commit_bio(cache_t *cache, unsigned int n)
+{
+	unsigned int i;
+	raidxor_bio_t *rxbio;
+
+	CHECK_ARG_RET(cache);
+	CHECK_PLAIN_RET(n < cache->n_lines);
+	CHECK_PLAIN_RET(cache->lines[n]);
+
+	rxbio = cache->lines[n]->rxbio;
+
+	CHECK_PLAIN_RET(rxbio);
+
+	for (i = 0; i < rxbio->n_bios; ++i)
+		if (rxbio->bios[i])
+			generic_make_request(rxbio->bios[i]);
+}
+
 static void raidxor_end_load_line(struct bio *bio, int error);
 static void raidxor_end_writeback_line(struct bio *bio, int error);
 
@@ -222,19 +243,19 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 
 		bio->bi_size = n_chunk_mult * PAGE_SIZE;
 
-		printk(KERN_EMERG "cache->n_buffers = %d, n_red_buffers = %d\n",
-		       cache->n_buffers, cache->n_red_buffers);
+		/* printk(KERN_EMERG "cache->n_buffers = %d, n_red_buffers = %d\n",
+		       cache->n_buffers, cache->n_red_buffers); */
 		/* assign pages */
 		bio->bi_vcnt = n_chunk_mult;
 		for (j = 0; j < n_chunk_mult; ++j) {
 
 			if (stripe->units[i]->redundant) {
 				k = cache->n_buffers + l * n_chunk_mult + j;
-				printk(KERN_EMERG "[%d], red k = %d\n", j, k);
+				/* printk(KERN_EMERG "[%d], red k = %d\n", j, k); */
 			}
 			else {
 				k = i * n_chunk_mult + j;
-				printk(KERN_EMERG "[%d], nonred k = %d\n", j, k);
+				/* printk(KERN_EMERG "[%d], nonred k = %d\n", j, k); */
 			}
 
 			CHECK_PLAIN(line->buffers[k]);
@@ -248,19 +269,13 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 			++l;
 	}
 
- 	CHECK_LINE;
+ 	/* CHECK_LINE; */
 
 	line->rxbio = rxbio;
 	rxbio->remaining = rxbio->n_bios;
 	++cache->active_lines;
 
 	printk(KERN_EMERG "with %d bios\n", rxbio->n_bios);
-
-	for (i = 0; i < rxbio->n_bios; ++i)
-		if (rxbio->bios[i]) {
-			CHECK_LINE;
-			generic_make_request(rxbio->bios[i]);
-		}
 
 	line->status = CACHE_LINE_LOADING;
 
@@ -335,11 +350,11 @@ static int raidxor_cache_writeback_line(cache_t *cache, unsigned int n)
 		for (j = 0; j < n_chunk_mult; ++j) {
 			if (stripe->units[i]->redundant) {
 				k = cache->n_buffers + l * n_chunk_mult + j;
-				printk(KERN_EMERG "[%d], red k = %d\n", j, k);
+				/* printk(KERN_EMERG "[%d], red k = %d\n", j, k); */
 			}
 			else {
 				k = i * n_chunk_mult + j;
-				printk(KERN_EMERG "[%d], nonred k = %d\n", j, k);
+				/* printk(KERN_EMERG "[%d], nonred k = %d\n", j, k); */
 			}
 
 			bio->bi_io_vec[j].bv_page = line->buffers[k];
@@ -362,10 +377,6 @@ static int raidxor_cache_writeback_line(cache_t *cache, unsigned int n)
 	rxbio->remaining = rxbio->n_bios;
 	++cache->active_lines;
 
-	for (i = 0; i < rxbio->n_bios; ++i)
-		if (rxbio->bios[i])
-			generic_make_request(rxbio->bios[i]);
-
 	line->status = CACHE_LINE_WRITEBACK;
 
 	return 0;
@@ -384,9 +395,10 @@ static void raidxor_end_load_line(struct bio *bio, int error)
 	cache_t *cache;
 	cache_line_t *line;
 	stripe_t *stripe;
-	unsigned int index, data_index;
+	unsigned int index, data_index, wake = 0;
+	unsigned long flags = 0;
 
- 	CHECK_LINE;
+ 	/* CHECK_LINE; */
 
 	CHECK_ARG_RET(bio);
 
@@ -408,10 +420,10 @@ static void raidxor_end_load_line(struct bio *bio, int error)
 
 	index = raidxor_bio_index(rxbio, bio, &data_index);
 
-	CHECK_LINE;
+	/* CHECK_LINE; */
 
 	if (error) {
-		WITHLOCKCONF(conf, {
+		WITHLOCKCONF(conf, flags, {
 		if (!stripe->units[index]->redundant)
 			line->status = CACHE_LINE_FAULTY;
 		});
@@ -420,7 +432,7 @@ static void raidxor_end_load_line(struct bio *bio, int error)
 
 	CHECK_LINE;
 
-	WITHLOCKCONF(conf, {
+	WITHLOCKCONF(conf, flags, {
 	if ((--rxbio->remaining) == 0) {
 		printk(KERN_EMERG "last callback for line %d, waking thread\n",
 		       rxbio->line);
@@ -430,9 +442,11 @@ static void raidxor_end_load_line(struct bio *bio, int error)
 			kfree(rxbio);
 		}
 		--cache->active_lines;
-		raidxor_wakeup_thread(conf);
+		wake = 1;
 	}
 	});
+
+	if (wake) raidxor_wakeup_thread(conf);
 }
 
 static void raidxor_end_writeback_line(struct bio *bio, int error)
@@ -444,7 +458,8 @@ static void raidxor_end_writeback_line(struct bio *bio, int error)
 	cache_t *cache;
 	cache_line_t *line;
 	stripe_t *stripe;
-	unsigned int index, data_index;
+	unsigned int index, data_index, wake = 0;
+	unsigned long flags = 0;
 
 	CHECK_ARG_RET(bio);
 
@@ -470,7 +485,7 @@ static void raidxor_end_writeback_line(struct bio *bio, int error)
 	if (error)
 		md_error(conf->mddev, stripe->units[index]->rdev);
 
-	WITHLOCKCONF(conf, {
+	WITHLOCKCONF(conf, flags, {
 	if ((--rxbio->remaining) == 0) {
 		line->status = CACHE_LINE_UPTODATE;
 
@@ -478,9 +493,11 @@ static void raidxor_end_writeback_line(struct bio *bio, int error)
 		kfree(rxbio);
 
 		--cache->active_lines;
-		raidxor_wakeup_thread(conf);
+		wake = 1;
 	}
 	});
+
+	if (wake) raidxor_wakeup_thread(conf);
 }
 
 /**
@@ -604,11 +621,12 @@ out:
  */
 static void raidxor_error(mddev_t *mddev, mdk_rdev_t *rdev)
 {
+	unsigned long flags = 0;
 	char buffer[BDEVNAME_SIZE];
 	raidxor_conf_t *conf = mddev_to_conf(mddev);
 	disk_info_t *unit = raidxor_find_unit_conf_rdev(conf, rdev);
 
-	WITHLOCKCONF(conf, {
+	WITHLOCKCONF(conf, flags, {
 	if (!test_bit(Faulty, &rdev->flags)) {
 		/* escalate error */
 		set_bit(Faulty, &rdev->flags);
@@ -629,31 +647,55 @@ static void raidxor_finish_lines(cache_t *cache)
 	unsigned int i;
 	cache_line_t *line;
 	unsigned int freed = 0;
+	unsigned long flags = 0;
 
 	CHECK_FUN(raidxor_finish_lines);
 
 	CHECK_ARG_RET(cache);
-	CHECK_PLAIN_RET(cache->n_waiting > 0);
-	CHECK_PLAIN_RET(cache->n_lines > 0);
+
+	WITHLOCKCONF(cache->conf, flags, {
+#undef CHECK_JUMP_LABEL
+#define CHECK_JUMP_LABEL out
+	CHECK_PLAIN(cache->n_waiting > 0);
+	CHECK_PLAIN(cache->n_lines > 0);
 
 	/* as long as there are more waiting slots than now free'd slots */
 	for (i = 0; i < cache->n_lines && freed < cache->n_waiting; ++i) {
 		line = cache->lines[i];
 		switch (line->status) {
 		case CACHE_LINE_READY:
-			if (line->waiting) break;
+			if (line->waiting)
+				printk(KERN_EMERG "line %u with state READY has waiting in finish_lines\n", i);
+			else
+				printk(KERN_EMERG "line %u with state READY has no waiting in finish_lines\n", i);
 			/* can only happen if we stop the raid */
 		case CACHE_LINE_CLEAN:
+			if (line->waiting) {
+				printk(KERN_EMERG "line %u with STATE CLEAN has waiting in finish_lines\n", i);
+				break;
+			}
 			++freed;
 			break;
 		case CACHE_LINE_UPTODATE:
+			if (line->waiting) {
+				printk(KERN_EMERG "line %u with STATE UPTODATE has waiting in finish_lines\n", i);
+				break;
+			}
 			raidxor_cache_make_ready(cache, i);
 			++freed;
 			break;
 		case CACHE_LINE_DIRTY:
+			if (line->waiting) {
+				printk(KERN_EMERG "line %u with STATE DIRTY has waiting in finish_lines\n", i);
+				break;
+			}
 			/* when the callback is invoked, the main thread is
 			   woken up and eventually revisits this entry  */
-			raidxor_cache_writeback_line(cache, i);
+			if (!raidxor_cache_writeback_line(cache, i)) {
+				UNLOCKCONF(cache->conf, flags);
+				raidxor_cache_commit_bio(cache, i);
+				LOCKCONF(cache->conf, flags);
+			}
 			break;
 		case CACHE_LINE_LOAD_ME:
 		case CACHE_LINE_LOADING:
@@ -666,8 +708,16 @@ static void raidxor_finish_lines(cache_t *cache)
 		}
 	}
 
-	cache->n_waiting -= freed;
-	if (freed > 0) raidxor_signal_empty_line(cache->conf);
+	printk(KERN_EMERG "freed %u lines\n", freed);
+/*	cache->n_waiting -= freed; */
+
+out:
+	do {} while (0);
+
+	});
+
+	for (i = 0; i < freed; ++i)
+		raidxor_signal_empty_line(cache->conf);
 }
 
 /**
@@ -679,12 +729,15 @@ static void raidxor_handle_requests(cache_t *cache, unsigned int n_line)
 {
 	cache_line_t *line;
 	struct bio *bio;
+	unsigned long flags;
 
 	CHECK_ARG_RET(cache);
 	CHECK_PLAIN_RET(n_line < cache->n_lines);
 
 	line = cache->lines[n_line];
 	CHECK_PLAIN_RET(line);
+
+	WITHLOCKCONF(cache->conf, flags, {
 	CHECK_PLAIN_RET(line->status == CACHE_LINE_UPTODATE ||
 			line->status == CACHE_LINE_DIRTY);
 
@@ -694,15 +747,18 @@ static void raidxor_handle_requests(cache_t *cache, unsigned int n_line)
 			raidxor_copy_bio_to_cache(cache, n_line, bio);
 		else raidxor_copy_bio_from_cache(cache, n_line, bio);
 
-		bio_endio(bio, 0);
-
 		/* mark dirty */
 		if (bio_data_dir(bio) == WRITE &&
 		    line->status == CACHE_LINE_UPTODATE)
 		{
 			line->status = CACHE_LINE_DIRTY;
 		}
+
+		UNLOCKCONF(cache->conf, flags);
+		bio_endio(bio, 0);
+		LOCKCONF(cache->conf, flags);
 	}
+	});
 }
 
 /**
@@ -716,6 +772,8 @@ static int raidxor_handle_line(cache_t *cache, unsigned int n_line)
 #undef CHECK_RETURN_VALUE
 #define CHECK_RETURN_VALUE 0
 	cache_line_t *line;
+	unsigned long flags;
+	unsigned int commit = 0, done = 0;
 
 	CHECK_ARG_RET_VAL(cache);
 	CHECK_PLAIN_RET_VAL(n_line < cache->n_lines);
@@ -723,23 +781,29 @@ static int raidxor_handle_line(cache_t *cache, unsigned int n_line)
 	line = cache->lines[n_line];
 	CHECK_PLAIN_RET_VAL(line);
 
+	WITHLOCKCONF(cache->conf, flags, {
+
 	/* if nobody wants something from this line, do nothing */
-	if (!line->waiting) return 0;
+	if (!line->waiting) goto out_unlock;
 
 	switch (line->status) {
 	case CACHE_LINE_LOAD_ME:
-		raidxor_cache_load_line(cache, n_line);
-		goto out_done_something;
+		commit = !raidxor_cache_load_line(cache, n_line);
+		done = 1;
+		break;
 	case CACHE_LINE_FAULTY:
 		raidxor_cache_recover(cache, n_line);
-		goto out_done_something;
+		done = 1;
+		break;
 	case CACHE_LINE_UPTODATE:
 	case CACHE_LINE_DIRTY:
-		raidxor_handle_requests(cache, n_line);
-		printk(KERN_EMERG "line %d still has %d requests\n",
+		printk(KERN_EMERG "line %d still had %d requests\n",
 		       n_line,
 		       raidxor_cache_line_length_requests(cache, n_line));
-		goto out_done_something;
+		UNLOCKCONF(cache->conf, flags);
+		raidxor_handle_requests(cache, n_line);
+		done = 1;
+		goto break_unlocked;
 	case CACHE_LINE_READY:
 	case CACHE_LINE_RECOVERY:
 	case CACHE_LINE_LOADING:
@@ -750,9 +814,16 @@ static int raidxor_handle_line(cache_t *cache, unsigned int n_line)
 		/* no default */
 	}
 
+	});
+break_unlocked:
+
+	if (commit) raidxor_cache_commit_bio(cache, n_line);
+
+	return done;
+out_unlock:
+	UNLOCKCONF(cache->conf, flags);
+out:
 	return 0;
-out_done_something:
-	return 1;
 }
 
 /**
@@ -767,26 +838,24 @@ static void raidxord(mddev_t *mddev)
 	cache_t *cache;
 	unsigned int handled = 0;
 	unsigned int done = 0;
+	unsigned long flags = 0;
 
 	CHECK_ARG_RET(mddev);
 
 	conf = mddev_to_conf(mddev);
 	CHECK_PLAIN_RET(conf);
 
+	cache = conf->cache;
+	CHECK_PLAIN_RET(cache);
+
 	/* someone poked us.  see what we can do */
 	printk(KERN_EMERG "raidxor: raidxord active\n");
-
-	WITHLOCKCONF(conf, {
-#undef CHECK_JUMP_LABEL
-#define CHECK_JUMP_LABEL out
-
-	cache = conf->cache;
-	CHECK_PLAIN(cache);
 
 	for (; !done;) {
 		/* go through all cache lines, see if any waiting requests
 		   can be handled */
 		for (i = 0, done = 1; i < cache->n_lines; ++i) {
+			CHECK_LINE;
 			/* only break if we have handled at least one line */
 			if (raidxor_handle_line(cache, i)) {
 				++handled;
@@ -794,22 +863,25 @@ static void raidxord(mddev_t *mddev)
 			}
 		}
 
+		CHECK_LINE;
+
 		/* also, if somebody is waiting for a free line, try to make
 		   one (or more) available.  freeing some lines doesn't count
 		   for done above, so if we're done working on those lines
 		   and we free two lines afterwards, the waiting processes
 		   are notified and signal us back later on */
-		if (cache->n_waiting > 0) raidxor_finish_lines(cache);
 
-		/* give others the chance to do something */
-#if 0
-		UNLOCKCONF(conf);
-		schedule(); /* TODO: correct? */
-		LOCKCONF(conf);
-#endif
+		if (cache->n_waiting > 0) {
+			CHECK_LINE;
+			raidxor_finish_lines(cache);
+		}
+		CHECK_LINE;
 	}
-out:
-	do {} while (0);
+
+	CHECK_LINE;
+
+	WITHLOCKCONF(conf, flags, {
+	raidxor_cache_print_status(cache);
 	});
 
 	printk(KERN_EMERG "raidxor: thread inactive, %u lines handled\n", handled);
@@ -951,8 +1023,9 @@ out_inval:
 static int raidxor_stop(mddev_t *mddev)
 {
 	raidxor_conf_t *conf = mddev_to_conf(mddev);
+	unsigned long flags = 0;
 
-	WITHLOCKCONF(conf, {
+	WITHLOCKCONF(conf, flags, {
 	set_bit(CONF_STOPPING, &conf->flags);
 	raidxor_wait_for_no_active_lines(conf);
 	raidxor_wait_for_writeback(conf);
@@ -1032,6 +1105,7 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 	struct bio_pair *split;
 	unsigned int line;
 	sector_t aligned_sector, strip_sectors, mod, div;
+	unsigned long flags = 0;
 
 #undef CHECK_JUMP_LABEL
 #define CHECK_JUMP_LABEL out
@@ -1047,12 +1121,15 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 	cache = conf->cache;
 	CHECK_PLAIN(cache);
 
-	printk(KERN_EMERG "raidxor: got request, virtual sector %llu, length %u\n",
-	       (unsigned long long) bio->bi_sector, bio->bi_size);
+	printk(KERN_EMERG "raidxor: got request\n");
 
-	WITHLOCKCONF(conf, {
+	WITHLOCKCONF(conf, flags, {
+/*	spin_lock_irq(&conf->device_lock); */
 #undef CHECK_JUMP_LABEL
 #define CHECK_JUMP_LABEL out_unlock
+
+	printk(KERN_EMERG "virtual sector %llu, length %u\n",
+	       (unsigned long long) bio->bi_sector, bio->bi_size);
 
 	if (test_bit(CONF_STOPPING, &conf->flags))
 		goto out_unlock;
@@ -1072,8 +1149,8 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 	/* set as offset to new base */
 	bio->bi_sector = bio->bi_sector - aligned_sector;
 
-	printk(KERN_EMERG "aligned_sector %llu, bio->bi_sector %llu\n",
-	       aligned_sector, bio->bi_sector);
+	/* printk(KERN_EMERG "aligned_sector %llu, bio->bi_sector %llu\n",
+	       aligned_sector, bio->bi_sector); */
 
 
 	/* checked assumption is: aligned_sector is aligned to
@@ -1133,12 +1210,14 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 	/* pack the request somewhere in the cache */
 	raidxor_cache_add_request(cache, line, bio);
 	});
+/*	spin_unlock_irq(&conf->device_lock); */
 
 	raidxor_wakeup_thread(conf);
 
 	return 0;
 out_unlock: __attribute__((unused))
-	UNLOCKCONF(conf);
+	UNLOCKCONF(conf, flags);
+/*	spin_unlock_irq(&conf->device_lock); */
 out: __attribute__((unused))
 	bio_io_error(bio);
 	return 0;

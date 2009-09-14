@@ -296,16 +296,33 @@ struct raidxor_conf {
 
 #define mddev_to_conf(mddev) (mddev->private)
 
+#if 0
 #define LOCKCONF(conf) \
 	spin_lock(&conf->device_lock)
 
 #define UNLOCKCONF(conf) \
 	spin_unlock(&conf->device_lock)
+#else
+#define LOCKCONF(conf, flags) \
+	spin_lock_irqsave(&conf->device_lock, flags)
 
-#define WITHLOCKCONF(conf,block) \
-	LOCKCONF(conf); \
+#define UNLOCKCONF(conf, flags) \
+	spin_unlock_irqrestore(&conf->device_lock, flags)
+#endif
+
+#if 1
+#define WITHLOCKCONF(conf,flags,block) \
+	unsigned int __check_bug = spin_is_locked(&conf->device_lock); \
+	if (__check_bug) CHECK_BUG("recursive lock"); \
+	LOCKCONF(conf, flags); \
 	do block while(0); \
-	UNLOCKCONF(conf);
+	UNLOCKCONF(conf, flags);
+#else
+#define WITHLOCKCONF(conf,flags,block) \
+	LOCKCONF(conf, flags); \
+	do block while(0); \
+	UNLOCKCONF(conf, flags);
+#endif
 
 /* #define RAIDXOR_CONF_STATUS_NORMAL 0 */
 #define CONF_INCOMPLETE 1

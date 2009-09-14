@@ -183,8 +183,8 @@ raidxor_show_units_per_resource(mddev_t *mddev, char *page)
 static ssize_t
 raidxor_store_units_per_resource(mddev_t *mddev, const char *page, size_t len)
 {
+	unsigned long new, flags = 0;
 	raidxor_conf_t *conf = mddev_to_conf(mddev);
-	unsigned long new;
 
 	if (len >= PAGE_SIZE)
 		return -EINVAL;
@@ -196,7 +196,7 @@ raidxor_store_units_per_resource(mddev_t *mddev, const char *page, size_t len)
 	if (new == 0)
 		return -EINVAL;
 
-	WITHLOCKCONF(conf, {
+	WITHLOCKCONF(conf, flags, {
 	raidxor_safe_free_conf(conf);
 	conf->units_per_resource = new;
 	raidxor_try_configure_raid(conf);
@@ -219,8 +219,8 @@ raidxor_show_number_of_resources(mddev_t *mddev, char *page)
 static ssize_t
 raidxor_store_number_of_resources(mddev_t *mddev, const char *page, size_t len)
 {
+	unsigned long new, flags = 0;
 	raidxor_conf_t *conf = mddev_to_conf(mddev);
-	unsigned long new;
 
 	if (len >= PAGE_SIZE)
 		return -EINVAL;
@@ -232,7 +232,7 @@ raidxor_store_number_of_resources(mddev_t *mddev, const char *page, size_t len)
 	if (new == 0)
 		return -EINVAL;
 
-	WITHLOCKCONF(conf, {
+	WITHLOCKCONF(conf, flags, {
 	raidxor_safe_free_conf(conf);
 	conf->n_resources = new;
 	raidxor_try_configure_raid(conf);
