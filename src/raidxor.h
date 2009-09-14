@@ -221,7 +221,7 @@ struct raidxor_resource {
 
 /**
  * struct stripe - one stripe over multiple resources and units
- * @size: size in sectors, that is, 1024 bytes
+ * @size: size in blocks, that is, 512 bytes
  * @n_units: the number of contained units
  * @units: the actual units
  *

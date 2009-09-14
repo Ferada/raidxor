@@ -114,7 +114,7 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 			goto out_free_stripes;
 		}
 
-		stripes[i]->size = stripes[i]->n_data_units * mddev->size;
+		stripes[i]->size = stripes[i]->n_data_units * mddev->size * 2;
 	}
 
 	/* allocate the cache with a default of 10 lines;
@@ -144,11 +144,11 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 	set_capacity(mddev->gendisk, mddev->array_sectors);
 
 	printk (KERN_EMERG "raidxor: array_sectors is %llu * %u = "
-		"%llu sectors, %llu blocks\n",
+		"%llu blocks, %llu sectors\n",
 		(unsigned long long) stripes[0]->size,
 		(unsigned int) conf->n_stripes,
 		(unsigned long long) mddev->array_sectors,
-		(unsigned long long) mddev->array_sectors * 2);
+		(unsigned long long) mddev->array_sectors / 2);
 
 	conf->stripe_size = stripes[0]->size;
 	conf->resources = resources;
@@ -351,6 +351,11 @@ static void raidxor_status(struct seq_file *seq, mddev_t *mddev)
 	raidxor_conf_t *conf = mddev_to_conf(mddev);
 
 	seq_printf(seq, "\n");
+
+	for (i = 0; i < conf->n_stripes; ++i) {
+		seq_printf(seq, "stripe %u with size %llu\n", i,
+			   conf->stripes[i]->size);
+	}
 
 	for (i = 0; i < conf->cache->n_lines; ++i) {
 		seq_printf(seq, "line %u: %s at sector %llu\n", i,

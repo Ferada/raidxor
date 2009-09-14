@@ -427,9 +427,9 @@ static stripe_t * raidxor_sector_to_stripe(raidxor_conf_t *conf, sector_t sector
 	unsigned long i;
 
 	for (i = 0; i < conf->n_stripes; ++i) {
-		if (sector <= stripes[i]->size >> 9)
+		if (sector < stripes[i]->size)
 			break;
-		sector -= stripes[i]->size >> 9;
+		sector -= stripes[i]->size;
 	}
 
 	printk(KERN_EMERG "raidxor: stripe %lu, sector %lu\n",

@@ -15,7 +15,7 @@ static void raidxor_fill_page(struct page *page, unsigned char value,
 
 static int raidxor_test_case_sector_to_stripe(void)
 {
-	unsigned int size = 10 * 4096 * 3;
+	unsigned int size = (10 * 4096 * 3) >> 9;
 	stripe_t stripes[3] = { { .size = size },
 				{ .size = size },
 				{ .size = size } };

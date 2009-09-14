@@ -912,7 +912,7 @@ static int raidxor_run(mddev_t *mddev)
 
 	/* used component size in sectors, multiple of chunk_size ... */
 	mddev->size = size & ~(conf->chunk_size / 1024 - 1);
-	/* exported size, will be initialised later */
+	/* exported size in blocks, will be initialised later */
 	mddev->array_sectors = 0;
 
 	/* Ok, everything is just fine now */
