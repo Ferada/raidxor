@@ -55,7 +55,7 @@ struct cache {
 	unsigned int n_waiting;
 	wait_queue_head_t wait_for_line;
 
-	cache_line_t lines[0];
+	cache_line_t *lines[0];
 };
 
 #define CACHE_LINE_CLEAN     0

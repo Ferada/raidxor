@@ -347,7 +347,18 @@ static struct attribute_group raidxor_attrs_group = {
 
 static void raidxor_status(struct seq_file *seq, mddev_t *mddev)
 {
-	seq_printf(seq, " I'm feeling fine");
+	unsigned int i;
+	raidxor_conf_t *conf = mddev_to_conf(mddev);
+
+	seq_printf(seq, "\n");
+
+	for (i = 0; i < conf->cache->n_lines; ++i) {
+		seq_printf(seq, "line %u: %s at sector %llu\n", i,
+			   raidxor_cache_line_status(conf->cache->lines[i]),
+			   conf->cache->lines[i]->sector);
+	}
+
+	/* seq_printf(seq, " I'm feeling fine"); */
 	return;
 }
 

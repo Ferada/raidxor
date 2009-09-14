@@ -40,7 +40,7 @@ static void raidxor_cache_add_request(cache_t *cache, unsigned int n_line,
 	CHECK_ARG_RET(bio);
 	CHECK_PLAIN_RET(n_line < cache->n_lines);
 
-	line = &cache->lines[n_line];
+	line = cache->lines[n_line];
 	CHECK_PLAIN_RET(line);
 
 	previous = line->waiting;
@@ -67,12 +67,26 @@ static struct bio * raidxor_cache_remove_request(cache_t *cache,
 	CHECK_ARG_RET_NULL(cache);
 	CHECK_PLAIN_RET_NULL(n_line < cache->n_lines);
 
-	line = &cache->lines[n_line];
+	line = cache->lines[n_line];
 	CHECK_PLAIN_RET_NULL(line);
 
 	result = line->waiting;
 	if (result) {
 		line->waiting = result->bi_next;
+	}
+
+	return result;
+}
+
+static unsigned int raidxor_cache_line_length_requests(cache_t *cache,
+						       unsigned int n_line)
+{
+	unsigned int result = 0;
+	struct bio *bio = cache->lines[n_line]->waiting;
+
+	while (bio) {
+		bio = bio->bi_next;
+		++result;
 	}
 
 	return result;
@@ -120,8 +134,10 @@ static void free_bio(struct bio *bio)
 
 	CHECK_ARG_RET(bio);
 
-	for (i = 0; i < bio->bi_vcnt; ++i)
+	for (i = 0; i < bio->bi_vcnt; ++i) {
 		safe_put_page(bio->bi_io_vec[i].bv_page);
+		bio->bi_io_vec[i].bv_page = NULL;
+	}
 	bio_put(bio);
 }
 
@@ -135,7 +151,10 @@ static void free_bios(raidxor_bio_t *rxbio)
 	CHECK_ARG_RET(rxbio);
 
 	for (i = 0; i < rxbio->n_bios; ++i)
-		if (rxbio->bios[i]) free_bio(rxbio->bios[i]);
+		if (rxbio->bios[i]) {
+			free_bio(rxbio->bios[i]);
+			rxbio->bios[i] = NULL;
+		}
 }
 
 static raidxor_bio_t * raidxor_alloc_bio(unsigned int nbios)
@@ -159,6 +178,19 @@ static void raidxor_free_bio(raidxor_bio_t *rxbio)
 	kfree(rxbio);
 }
 
+static void raidxor_cache_drop_line(cache_t *cache, unsigned int line)
+{
+	unsigned int i;
+
+	CHECK_ARG_RET(cache);
+	CHECK_PLAIN_RET(line < cache->n_lines);
+
+	for (i = 0; i < cache->n_buffers + cache->n_red_buffers; ++i) {
+		safe_put_page(cache->lines[line]->buffers[i]);
+		cache->lines[line]->buffers[i] = NULL;
+	}
+}
+
 /**
  * raidxor_alloc_cache() - allocates a new cache with buffers
  * @n_lines: number of available lines in the cache
@@ -179,11 +211,16 @@ static cache_t * raidxor_alloc_cache(unsigned int n_lines,
 	CHECK_PLAIN_RET_NULL(n_buffers != 0);
 	CHECK_PLAIN_RET_NULL(n_chunk_mult != 0);
 
-	cache = kzalloc(sizeof(cache_t) +
-			(sizeof(cache_line_t) +
-			 sizeof(struct page *) * (n_buffers + n_red_buffers)) * n_lines,
+	cache = kzalloc(sizeof(cache_t) + sizeof(cache_line_t *) * n_lines,
 			GFP_NOIO);
 	CHECK_ALLOC_RET_NULL(cache);
+
+	for (i = 0; i < n_lines; ++i) {
+		cache->lines[i] = kzalloc(sizeof(cache_line_t), GFP_NOIO);
+		if (!cache->lines[i])
+			goto out_free_lines;
+		cache->lines[i]->status = CACHE_LINE_CLEAN;
+	}
 
 	cache->n_lines = n_lines;
 	cache->n_buffers = n_buffers;
@@ -193,9 +230,27 @@ static cache_t * raidxor_alloc_cache(unsigned int n_lines,
 
 	init_waitqueue_head(&cache->wait_for_line);
 
-	for (i = 0; i < n_lines; ++i)
-		cache->lines[i].status = CACHE_LINE_CLEAN;
 	return cache;
+
+out_free_lines:
+	for (i = 0; i < cache->n_lines; ++i)
+		if (cache->lines[i]) kfree(cache->lines[i]);
+	kfree(cache);
+	return NULL;
+}
+
+static void raidxor_free_cache(cache_t *cache)
+{
+	unsigned int i;
+
+	CHECK_ARG_RET(cache);
+
+	for (i = 0; i < cache->n_lines; ++i) {
+		raidxor_cache_drop_line(cache, i);
+		kfree(cache->lines[i]);
+	}
+
+	kfree(cache);
 }
 
 static void raidxor_cache_abort_requests(cache_t *cache, unsigned int line)
@@ -205,29 +260,6 @@ static void raidxor_cache_abort_requests(cache_t *cache, unsigned int line)
 	while ((bio = raidxor_cache_remove_request(cache, line))) {
 		bio_io_error(bio);
 	}
-}
-
-static void raidxor_cache_drop_line(cache_t *cache, unsigned int line)
-{
-	unsigned int i;
-
-	CHECK_ARG_RET(cache);
-	CHECK_PLAIN_RET(line < cache->n_lines);
-
-	for (i = 0; i < cache->n_buffers + cache->n_red_buffers; ++i)
-		safe_put_page(cache->lines[line].buffers[i]);
-}
-
-static void raidxor_free_cache(cache_t *cache)
-{
-	unsigned int i;
-
-	CHECK_ARG_RET(cache);
-
-	for (i = 0; i < cache->n_lines; ++i)
-		raidxor_cache_drop_line(cache, i);
-
-	kfree(cache);
 }
 
 /**
@@ -256,7 +288,10 @@ static void raidxor_safe_free_conf(raidxor_conf_t *conf) {
 		conf->stripes = NULL;
 	}
 
-	if (conf->cache != NULL) raidxor_free_cache(conf->cache);
+	if (conf->cache != NULL) {
+		raidxor_free_cache(conf->cache);
+		conf->cache = NULL;
+	}
 }
 
 /**
@@ -276,7 +311,11 @@ static void raidxor_copy_bio_to_cache(cache_t *cache, unsigned int n_line,
 	CHECK_FUN(raidxor_copy_bio_to_cache);
 
 	offset = bio->bi_sector;
-	line = &cache->lines[n_line];
+	line = cache->lines[n_line];
+
+	printk(KERN_EMERG "in line %u, going to virtual sector %llu\n",
+	       n_line, line->sector);
+	printk(KERN_EMERG "copying to offset %llu and line %u, ", offset, n_line);
 
 	/* skip offset / some pages */
 	j = 0;
@@ -285,14 +324,22 @@ static void raidxor_copy_bio_to_cache(cache_t *cache, unsigned int n_line,
 		++j;
 	}
 
+	printk("buffer corrected to %d\n", j);
+
+	CHECK_PLAIN_RET(j >= 0);
+	CHECK_PLAIN_RET(offset >= 0);
+
 	bio_for_each_segment(bvl, bio, i) {
 		bio_mapped = __bio_kmap_atomic(bio, i, KM_USER0);
 		page_mapped = kmap_atomic(line->buffers[j], KM_USER0);
 
+		printk(KERN_EMERG "copying %lu bytes for index %d, buffer %d\n", PAGE_SIZE, i, j);
+
 		memcpy(page_mapped, bio_mapped, PAGE_SIZE);
 
-		kunmap_atomic(line->buffers[j], KM_USER0);
+		kunmap_atomic(page_mapped, KM_USER0);
 		__bio_kunmap_atomic(bio_mapped, KM_USER0);
+		++j;
 	}
 }
 
@@ -313,7 +360,11 @@ static void raidxor_copy_bio_from_cache(cache_t *cache, unsigned int n_line,
 	CHECK_FUN(raidxor_copy_bio_from_cache);
 
 	offset = bio->bi_sector;
-	line = &cache->lines[n_line];
+	line = cache->lines[n_line];
+
+	printk(KERN_EMERG "in line %u, going to virtual sector %llu\n",
+	       n_line, line->sector);
+	printk(KERN_EMERG "copying from offset %llu and line %u, ", offset, n_line);
 
 	/* skip offset / some pages */
 	j = 0;
@@ -322,14 +373,22 @@ static void raidxor_copy_bio_from_cache(cache_t *cache, unsigned int n_line,
 		++j;
 	}
 
+	printk("buffer corrected to %d\n", j);
+
+	CHECK_PLAIN_RET(j >= 0);
+	CHECK_PLAIN_RET(offset >= 0);
+
 	bio_for_each_segment(bvl, bio, i) {
 		bio_mapped = __bio_kmap_atomic(bio, i, KM_USER0);
 		page_mapped = kmap_atomic(line->buffers[j], KM_USER0);
 
+		printk(KERN_EMERG "copying %lu bytes for index %d, buffer %d\n", PAGE_SIZE, i, j);
+
 		memcpy(bio_mapped, page_mapped, PAGE_SIZE);
 
-		kunmap_atomic(line->buffers[j], KM_USER0);
+		kunmap_atomic(page_mapped, KM_USER0);
 		__bio_kunmap_atomic(bio_mapped, KM_USER0);
+		++j;
 	}
 }
 
@@ -364,20 +423,17 @@ static void raidxor_copy_bio(struct bio *bioto, struct bio *biofrom)
 static stripe_t * raidxor_sector_to_stripe(raidxor_conf_t *conf, sector_t sector,
 					   sector_t *newsector)
 {
-	unsigned int sectors_per_chunk = conf->chunk_size >> 9;
 	stripe_t **stripes = conf->stripes;
 	unsigned long i;
 
-	printk(KERN_EMERG "raidxor: sectors_per_chunk %u\n",
-	       sectors_per_chunk);
-
 	for (i = 0; i < conf->n_stripes; ++i) {
-		printk(KERN_EMERG "raidxor: stripe %lu, sector %lu\n",
-		       i, (unsigned long) sector);
 		if (sector <= stripes[i]->size >> 9)
 			break;
 		sector -= stripes[i]->size >> 9;
 	}
+
+	printk(KERN_EMERG "raidxor: stripe %lu, sector %lu\n",
+	       i, (unsigned long) sector);
 
 	if (newsector)
 		*newsector = sector;
@@ -401,19 +457,23 @@ static int raidxor_cache_find_line(cache_t *cache, sector_t sector,
 
 	/* find an exact match */
 	for (i = 0; i < cache->n_lines; ++i) {
-		if (sector == cache->lines[i].sector) {
-			if (line)
-				*line = i;
+		if (sector == cache->lines[i]->sector) {
+			if (line) *line = i;
 			return 1;
 		}
 	}
 
+	/* find lines to reassign */
 	for (i = 0; i < cache->n_lines; ++i) {
-		if (cache->lines[i].status == CACHE_LINE_CLEAN)
-			return i;
-		else if (cache->lines[i].status == CACHE_LINE_READY &&
-			 !cache->lines[i].waiting)
-			return i;
+		if (cache->lines[i]->status == CACHE_LINE_CLEAN) {
+			if (line) *line = i;
+			return 1;
+		}
+		else if (cache->lines[i]->status == CACHE_LINE_READY &&
+			 !cache->lines[i]->waiting) {
+			if (line) *line = i;
+			return 1;
+		}
 	}
 
 	return 0;
@@ -429,12 +489,24 @@ static unsigned int raidxor_cache_empty_lines(cache_t *cache)
 	CHECK_ARG_RET_VAL(cache);
 
 	for (i = 0; i < cache->n_lines; ++i)
-		if (cache->lines[i].status == CACHE_LINE_CLEAN ||
-		    cache->lines[i].status == CACHE_LINE_READY) {
+		if (cache->lines[i]->status == CACHE_LINE_CLEAN ||
+		    cache->lines[i]->status == CACHE_LINE_READY) {
 			++result;
 		}
 
 	return result;
+}
+
+/**
+ * raidxor_wakeup_thread() - wakes the associated kernel thread
+ *
+ * Whenever we need something done, this will (re-)start the kernel thread
+ * (see raidxord()).
+ */
+static void raidxor_wakeup_thread(raidxor_conf_t *conf)
+{
+	CHECK_ARG_RET(conf);
+	md_wakeup_thread(conf->mddev->thread);
 }
 
 /**
@@ -446,9 +518,13 @@ static void raidxor_wait_for_no_active_lines(raidxor_conf_t *conf)
 {
 	CHECK_ARG_RET(conf);
 
+	printk(KERN_EMERG "active_lines = %d\n", conf->cache->active_lines);
+	printk(KERN_EMERG "WAITING\n");
+
 	wait_event_lock_irq(conf->cache->wait_for_line,
 			    conf->cache->active_lines == 0,
 			    conf->device_lock, /* nothing */);
+	printk(KERN_EMERG "WAITING DONE\n");
 }
 
 /**
@@ -465,11 +541,37 @@ static void raidxor_wait_for_empty_line(raidxor_conf_t *conf)
 
 	/* signal raidxord to free some lines */
 	++conf->cache->n_waiting;
+	raidxor_wakeup_thread(conf);
+
+	printk(KERN_EMERG "WAITING\n");
 
 	wait_event_lock_irq(conf->cache->wait_for_line,
 			    raidxor_cache_empty_lines(conf->cache) > 0 ||
 			    test_bit(CONF_STOPPING, &conf->flags),
+			    conf->device_lock,
+			    printk(KERN_EMERG "wait condition still not matched: %d\n",
+				   raidxor_cache_empty_lines(conf->cache)));
+	printk(KERN_EMERG "WAITING DONE\n");
+}
+
+static void raidxor_wait_for_writeback(raidxor_conf_t *conf)
+{
+	CHECK_ARG_RET(conf);
+
+	/* signal raidxord to free all lines */
+	conf->cache->n_waiting = conf->cache->n_lines;
+	raidxor_wakeup_thread(conf);
+
+	printk(KERN_EMERG "active_lines = %d, n_waiting = %d\n",
+	       conf->cache->active_lines,
+	       conf->cache->n_waiting);
+	printk(KERN_EMERG "WAITING\n");
+
+	wait_event_lock_irq(conf->cache->wait_for_line,
+			    conf->cache->active_lines == 0 &&
+			    conf->cache->n_waiting == 0,
 			    conf->device_lock, /* nothing */);
+	printk(KERN_EMERG "WAITING DONE\n");
 }
 
 /**
@@ -482,18 +584,6 @@ static void raidxor_signal_empty_line(raidxor_conf_t *conf)
 	CHECK_ARG_RET(conf);
 
 	wake_up(&conf->cache->wait_for_line);
-}
-
-/**
- * raidxor_wakeup_thread() - wakes the associated kernel thread
- *
- * Whenever we need something done, this will (re-)start the kernel thread
- * (see raidxord()).
- */
-static void raidxor_wakeup_thread(raidxor_conf_t *conf)
-{
-	CHECK_ARG_RET(conf);
-	md_wakeup_thread(conf->mddev->thread);
 }
 
 #if 0
