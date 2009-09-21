@@ -404,7 +404,7 @@ raidxor_encoding = __ATTR(encoding, S_IRUGO | S_IWUSR,
 			  raidxor_store_encoding);
 
 static struct md_sysfs_entry
-raidxor_decoding = __ATTR(encoding, S_IRUGO | S_IWUSR,
+raidxor_decoding = __ATTR(decoding, S_IRUGO | S_IWUSR,
 			  raidxor_show_decoding,
 			  raidxor_store_decoding);
 
