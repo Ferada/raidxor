@@ -394,7 +394,7 @@ out:
 }
 
 static struct md_sysfs_entry
-raidxor_resources_per_stripe = __ATTR(number_of_resources, S_IRUGO | S_IWUSR,
+raidxor_resources_per_stripe = __ATTR(resources_per_stripe, S_IRUGO | S_IWUSR,
 				     raidxor_show_resources_per_stripe,
 				     raidxor_store_resources_per_stripe);
 
