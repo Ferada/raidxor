@@ -14,6 +14,12 @@ parser.add_option ("--stop", dest = "mode",
 parser.add_option ("--restart", dest = "mode",
                    action = "store_const", const = "restart",
                    help = "restart the raid")
+parser.add_option ("--watch", dest = "mode",
+                   action = "store_const", const = "watch",
+                   help = "serves kernel decoding requests")
+parser.add_option ("--cauchyrs", dest = "cauchyrs",
+                   default = "", metavar = "FILE",
+                   help = "specifies cauchyrs executable file")
 parser.add_option ("-n", "--noscript", dest = "script",
                    action = "store_false", default = True,
                    help = "writes no shell script to stdout")
@@ -312,5 +318,7 @@ if opts.mode == "stop" or opts.mode == "restart":
     [generate_stop_shell_script (file) for file in files]
 if opts.mode == "start" or opts.mode == "start":
     [generate_start_shell_script (file) for file in files]
+if opts.mode == "watch":
+    print "cauchyrs executable at %s" % opts.cauchyrs
 
 sys.exit (0)
