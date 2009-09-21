@@ -734,8 +734,8 @@ static void raidxor_invalidate_decoding(raidxor_conf_t *conf,
 			       raidxor_unit_to_index(conf, stripe->units[i]));
 		}
 
-	printk(KERN_EMERG "raidxor: unit %u requests decoding information\n",
-	       raidxor_unit_to_index(conf, unit));
+	printk(KERN_EMERG "raidxor: raid %s needs new decoding information\n",
+	       mdname(conf->mddev));
 }
 
 /**
