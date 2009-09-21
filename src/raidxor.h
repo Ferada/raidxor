@@ -300,6 +300,7 @@ struct raidxor_conf {
 
 	unsigned int configured;
 
+	unsigned int resources_per_stripe;
 	unsigned int units_per_resource;
 	unsigned int n_resources;
 	resource_t **resources;

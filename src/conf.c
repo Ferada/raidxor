@@ -20,18 +20,19 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 		return;
 	}
 
-	if (conf->n_resources <= 0 || conf->units_per_resource <= 0) {
-		printk(KERN_EMERG "raidxor: need number of resources or "
+	if (conf->resources_per_stripe <= 0 || conf->units_per_resource <= 0) {
+		printk(KERN_EMERG "raidxor: need resources per stripe or "
 		       "units per resource: %u or %u\n",
-		       conf->n_resources, conf->units_per_resource);
+		       conf->resources_per_stripe, conf->units_per_resource);
 		goto out;
 	}
 
-	if (conf->n_resources * conf->units_per_resource != conf->n_units) {
+	if (conf->n_units % (conf->resources_per_stripe *
+			     conf->units_per_resource) != 0) {
 		printk(KERN_EMERG
-		       "raidxor: parameters don't match %u * %u != %u\n",
-		       conf->n_resources, conf->units_per_resource,
-		       conf->n_units);
+		       "raidxor: parameters don't match %u %% (%u * %u) != 0\n",
+		       conf->n_units, conf->resources_per_stripe,
+		       conf->units_per_resource);
 		goto out;
 	}
 
@@ -46,6 +47,8 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 
 	printk(KERN_EMERG "raidxor: got enough information, building raid\n");
 
+	conf->n_resources = conf->n_units / conf->units_per_resource;
+
 	resources = kzalloc(sizeof(resource_t *) * conf->n_resources,
 			    GFP_KERNEL);
 	if (!resources)
@@ -59,7 +62,8 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 			goto out_free_resources;
 	}
 
-	conf->n_stripes = conf->units_per_resource;
+	conf->n_stripes = conf->n_units /
+		(conf->resources_per_stripe * conf->units_per_resource);
 
 	stripes = kzalloc(sizeof(stripe_t *) * conf->n_stripes, GFP_KERNEL);
 	if (!stripes)
@@ -68,7 +72,8 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 	for (i = 0; i < conf->n_stripes; ++i) {
 		stripes[i] = kzalloc(sizeof(stripe_t) +
 				     (sizeof(disk_info_t *) *
-				      conf->n_resources), GFP_KERNEL);
+				      conf->resources_per_stripe *
+				      conf->units_per_resource), GFP_KERNEL);
 		if (!stripes[i])
 			goto out_free_stripes;
 	}
@@ -87,9 +92,9 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 
 	for (i = 0; i < conf->n_stripes; ++i) {
 		printk(KERN_EMERG "direct: stripes[%u] %p\n", i, stripes[i]);
-		stripes[i]->n_units = conf->n_units / conf->n_stripes;
+		stripes[i]->n_units = conf->resources_per_stripe *
+			conf->units_per_resource;
 		printk(KERN_EMERG "using %d units per stripe\n", stripes[i]->n_units);
-		printk(KERN_EMERG "going through %d units\n", stripes[i]->n_units);
 
 		for (j = 0; j < stripes[i]->n_units; ++j) {
 			printk(KERN_EMERG "using unit %u for stripe %u, index %u\n",
@@ -206,18 +211,18 @@ raidxor_store_units_per_resource(mddev_t *mddev, const char *page, size_t len)
 }
 
 static ssize_t
-raidxor_show_number_of_resources(mddev_t *mddev, char *page)
+raidxor_show_resources_per_stripe(mddev_t *mddev, char *page)
 {
 	raidxor_conf_t *conf = mddev_to_conf(mddev);
 
 	if (conf)
-		return sprintf(page, "%u\n", conf->n_resources);
+		return sprintf(page, "%u\n", conf->resources_per_stripe);
 	else
 		return -ENODEV;
 }
 
 static ssize_t
-raidxor_store_number_of_resources(mddev_t *mddev, const char *page, size_t len)
+raidxor_store_resources_per_stripe(mddev_t *mddev, const char *page, size_t len)
 {
 	unsigned long new, flags = 0;
 	raidxor_conf_t *conf = mddev_to_conf(mddev);
@@ -234,7 +239,7 @@ raidxor_store_number_of_resources(mddev_t *mddev, const char *page, size_t len)
 
 	WITHLOCKCONF(conf, flags, {
 	raidxor_safe_free_conf(conf);
-	conf->n_resources = new;
+	conf->resources_per_stripe = new;
 	raidxor_try_configure_raid(conf);
 	});
 
@@ -389,9 +394,9 @@ out:
 }
 
 static struct md_sysfs_entry
-raidxor_number_of_resources = __ATTR(number_of_resources, S_IRUGO | S_IWUSR,
-				     raidxor_show_number_of_resources,
-				     raidxor_store_number_of_resources);
+raidxor_resources_per_stripe = __ATTR(number_of_resources, S_IRUGO | S_IWUSR,
+				     raidxor_show_resources_per_stripe,
+				     raidxor_store_resources_per_stripe);
 
 static struct md_sysfs_entry
 raidxor_units_per_resource = __ATTR(units_per_resource, S_IRUGO | S_IWUSR,
@@ -409,7 +414,7 @@ raidxor_decoding = __ATTR(decoding, S_IRUGO | S_IWUSR,
 			  raidxor_store_decoding);
 
 static struct attribute * raidxor_attrs[] = {
-	(struct attribute *) &raidxor_number_of_resources,
+	(struct attribute *) &raidxor_resources_per_stripe,
 	(struct attribute *) &raidxor_units_per_resource,
 	(struct attribute *) &raidxor_encoding,
 	(struct attribute *) &raidxor_decoding,

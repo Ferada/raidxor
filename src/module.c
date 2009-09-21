@@ -1072,6 +1072,7 @@ static int raidxor_run(mddev_t *mddev)
 	conf->mddev = mddev;
 	conf->chunk_size = mddev->chunk_size;
 	conf->units_per_resource = 0;
+	conf->resources_per_stripe = 0;
 	conf->n_resources = 0;
 	conf->resources = NULL;
 	conf->n_stripes = 0;
