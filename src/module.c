@@ -100,43 +100,37 @@ static void raidxor_cache_abort_line(cache_t *cache, unsigned int line)
 }
 
 /**
- * raidxor_cache_recover() - tries to recover a cache line
+ * raidxor_valid_decoding() - checks for necessary equation(s)
  *
- * Since the read buffers are available, we can use them to calculate
- * the missing data.
+ * Returns 1 if everything is okay, else 0.
  */
-static void raidxor_cache_recover(cache_t *cache, unsigned int n_line)
+static unsigned int raidxor_valid_decoding(cache_t *cache, unsigned int n_line)
 {
-#undef CHECK_JUMP_LABEL
-#define CHECK_JUMP_LABEL out
+#undef CHECK_RETURN_VALUE
+#define CHECK_RETURN_VALUE 0
 	cache_line_t *line;
-	raidxor_conf_t *conf;
+	unsigned int i;
+	stripe_t *stripe;
 	raidxor_bio_t *rxbio;
 
-	CHECK_ARG(cache);
-	CHECK_PLAIN(n_line < cache->n_lines);
+	CHECK_ARG_RET_VAL(cache);
+	CHECK_PLAIN_RET_VAL(n_line < cache->n_lines);
 
 	line = cache->lines[n_line];
-	CHECK_PLAIN(line);
+	CHECK_PLAIN_RET_VAL(line);
 
 	rxbio = line->rxbio;
-	CHECK_PLAIN(rxbio);
+	CHECK_PLAIN_RET_VAL(rxbio);
 
-	conf = cache->conf;
-	CHECK_PLAIN(conf);
+	stripe = rxbio->stripe;
+	CHECK_PLAIN_RET_VAL(stripe);
 
-	if (1 /* TODO: we have don't have the equations */) {
-		goto out;
-	}
+	for (i = 0; i < stripe->n_units; ++i)
+		if (test_bit(Faulty, &stripe->units[i]->rdev->flags) &&
+		    !stripe->units[i]->decoding)
+			return 0;
 
-	line->status = CACHE_LINE_RECOVERY;
-
-	/* TODO: do the recovery */
-
-	line->status = CACHE_LINE_UPTODATE;
-out:
-	/* drop this line if an error occurs or we can't recover */
-	raidxor_cache_abort_line(cache, n_line);
+	return 1;
 }
 
 static unsigned int raidxor_bio_index(raidxor_bio_t *rxbio,
@@ -368,8 +362,8 @@ static int raidxor_cache_writeback_line(cache_t *cache, unsigned int n)
 	
 	for (i = 0; i < rxbio->n_bios; ++i) {
 		if (!stripe->units[i]->redundant) continue;
-		if (raidxor_xor_combine(rxbio->bios[i], rxbio,
-					stripe->units[i]->encoding))
+		if (raidxor_xor_combine_encode(rxbio->bios[i], rxbio,
+					       stripe->units[i]->encoding))
 			goto out_free_bio;
 	}
 
@@ -561,16 +555,62 @@ static int raidxor_check_same_size_and_layout(struct bio *x, struct bio *y)
 	return 0;
 }
 
+static int raidxor_xor_combine_decode(struct bio *bioto, raidxor_bio_t *rxbio,
+				      decoding_t *decoding)
+{
+#undef CHECK_JUMP_LABEL
+#define CHECK_JUMP_LABEL out
+	/* since we have control over bioto and rxbio, every bio has size
+	   M * CHUNK_SIZE with CHUNK_SIZE = N * PAGE_SIZE */
+	unsigned long i;
+	struct bio *biofrom;
+
+	CHECK_ARGS3(bioto, rxbio, decoding);
+
+	/* copying first bio buffers */
+	biofrom = raidxor_find_bio(rxbio, decoding->units[0]);
+	raidxor_copy_bio(bioto, biofrom);
+
+	/* then, xor the other buffers to the first one */
+	for (i = 1; i < decoding->n_units; ++i) {
+		printk(KERN_INFO "encoding unit %lu out of %d\n", i,
+		       decoding->n_units);
+		/* search for the right bio */
+		biofrom = raidxor_find_bio(rxbio, decoding->units[i]);
+
+		if (!biofrom) {
+			printk(KERN_DEBUG "raidxor: didn't find bio in"
+			       " raidxor_xor_combine_decode\n");
+			goto out;
+		}
+
+		if (raidxor_check_same_size_and_layout(bioto, biofrom)) {
+			printk(KERN_DEBUG "raidxor: bioto and biofrom"
+			       " differ in size and/or layout\n");
+			goto out;
+		}
+
+		printk(KERN_INFO "combining %p and %p\n", bioto, biofrom);
+
+		/* combine the data */
+		raidxor_xor_single(bioto, biofrom);
+	}
+
+	return 0;
+out:
+	return 1;
+}
+
 /**
- * raidxor_xor_combine() - xors a number of resources together
+ * raidxor_xor_combine_encode() - xors a number of resources together
  *
  * Takes a master request and combines the request inside the rxbio together
  * using the given encoding for the unit.
  *
  * Returns 1 on error (bioto still might be touched in this case).
  */
-static int raidxor_xor_combine(struct bio *bioto, raidxor_bio_t *rxbio,
-			       encoding_t *encoding)
+static int raidxor_xor_combine_encode(struct bio *bioto, raidxor_bio_t *rxbio,
+				      encoding_t *encoding)
 {
 #undef CHECK_JUMP_LABEL
 #define CHECK_JUMP_LABEL out
@@ -594,7 +634,7 @@ static int raidxor_xor_combine(struct bio *bioto, raidxor_bio_t *rxbio,
 
 		if (!biofrom) {
 			printk(KERN_DEBUG "raidxor: didn't find bio in"
-			       " raidxor_xor_combine\n");
+			       " raidxor_xor_combine_encode\n");
 			goto out;
 		}
 
@@ -616,6 +656,89 @@ out:
 }
 
 /**
+ * raidxor_cache_recover() - tries to recover a cache line
+ *
+ * Since the read buffers are available, we can use them to calculate
+ * the missing data.
+ */
+static void raidxor_cache_recover(cache_t *cache, unsigned int n_line)
+{
+	cache_line_t *line;
+	raidxor_conf_t *conf;
+	raidxor_bio_t *rxbio;
+	unsigned int i;
+	stripe_t *stripe;
+	unsigned long flags = 0;
+
+	CHECK_ARG_RET(cache);
+	CHECK_PLAIN_RET(n_line < cache->n_lines);
+
+	line = cache->lines[n_line];
+	CHECK_PLAIN_RET(line);
+
+	rxbio = line->rxbio;
+	CHECK_PLAIN_RET(rxbio);
+
+	stripe = rxbio->stripe;
+	CHECK_PLAIN_RET(stripe);
+
+	conf = cache->conf;
+	CHECK_PLAIN_RET(conf);
+
+	WITHLOCKCONF(conf, flags, {
+	if (!raidxor_valid_decoding(cache, n_line))
+		goto out;
+
+	line->status = CACHE_LINE_RECOVERY;
+
+	/* decoding using direct style */
+	for (i = 0; i < rxbio->n_bios; ++i) {
+		if (test_bit(Faulty, &stripe->units[i]->rdev->flags) &&
+		    raidxor_xor_combine_decode(rxbio->bios[i], rxbio,
+					       stripe->units[i]->decoding))
+			goto out;
+	}
+
+	line->status = CACHE_LINE_UPTODATE;
+	});
+	return;
+out:
+	/* drop this line if an error occurs or we can't recover */
+	raidxor_cache_abort_line(cache, n_line);
+	UNLOCKCONF(conf, flags);
+}
+
+static void raidxor_invalidate_decoding(raidxor_conf_t *conf,
+					disk_info_t *unit)
+{
+	stripe_t *stripe;
+	unsigned int i;
+
+	CHECK_ARG_RET(conf);
+	CHECK_ARG_RET(unit);
+
+	stripe = unit->stripe;
+	CHECK_PLAIN_RET(stripe);
+
+	if (unit->decoding) {
+		CHECK_BUG("unit has decoding, although it shouldn't have one");
+		raidxor_safe_free_decoding(unit);
+	}
+
+	for (i = 0; i < stripe->n_units; ++i)
+		if (raidxor_find_unit_decoding(stripe->units[i]->decoding,
+					       unit)) {
+			raidxor_safe_free_decoding(stripe->units[i]);
+			printk(KERN_EMERG "raidxor: unit %u requests decoding"
+			       " information\n",
+			       raidxor_unit_to_index(conf, stripe->units[i]));
+		}
+
+	printk(KERN_EMERG "raidxor: unit %u requests decoding information\n",
+	       raidxor_unit_to_index(conf, unit));
+}
+
+/**
  * raidxor_error() - propagates a device error
  *
  */
@@ -632,6 +755,7 @@ static void raidxor_error(mddev_t *mddev, mdk_rdev_t *rdev)
 		set_bit(Faulty, &rdev->flags);
 		set_bit(STRIPE_FAULTY, &unit->stripe->flags);
 		set_bit(CONF_FAULTY, &conf->flags);
+		raidxor_invalidate_decoding(conf, unit);
 		printk(KERN_ALERT "raidxor: disk failure on %s\n",
 		       bdevname(rdev->bdev, buffer));
 	}
@@ -791,9 +915,10 @@ static int raidxor_handle_line(cache_t *cache, unsigned int n_line)
 		done = 1;
 		break;
 	case CACHE_LINE_FAULTY:
+		UNLOCKCONF(cache->conf, flags);
 		raidxor_cache_recover(cache, n_line);
 		done = 1;
-		break;
+		goto break_unlocked;
 	case CACHE_LINE_UPTODATE:
 	case CACHE_LINE_DIRTY:
 		printk(KERN_EMERG "line %d still had %d requests\n",

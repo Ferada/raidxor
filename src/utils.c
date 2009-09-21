@@ -140,6 +140,34 @@ static disk_info_t * raidxor_find_unit_conf_rdev(raidxor_conf_t *conf,
 	return NULL;
 }
 
+static disk_info_t * raidxor_find_unit_decoding(decoding_t *decoding,
+						disk_info_t *unit)
+{
+	unsigned int i;
+
+	CHECK_ARG_RET_NULL(decoding);
+	CHECK_ARG_RET_NULL(unit);
+
+	for (i = 0; i < decoding->n_units; ++i)
+		if (decoding->units[i] == unit)
+			return unit;
+
+	return NULL;
+}
+
+static unsigned int raidxor_unit_to_index(raidxor_conf_t *conf,
+					  disk_info_t *unit)
+{
+	unsigned int i;
+
+	for (i = 0; i < conf->n_units; ++i)
+		if (&conf->units[i] == unit)
+			return i;
+
+	CHECK_BUG("didn't find unit, badbadbad");
+	return 0;
+}
+
 /**
  * free_bio() - puts all pages in a bio and the bio itself
  */
@@ -277,13 +305,29 @@ static void raidxor_cache_abort_requests(cache_t *cache, unsigned int line)
 	}
 }
 
+static void raidxor_safe_free_decoding(disk_info_t *unit)
+{
+	if (unit->decoding) {
+		kfree(unit->decoding);
+		unit->decoding = NULL;
+	}
+}
+
+static void raidxor_safe_free_encoding(disk_info_t *unit)
+{
+	if (unit->decoding) {
+		kfree(unit->encoding);
+		unit->encoding = NULL;
+	}
+}
+
 /**
  * raidxor_safe_free_conf() - frees resource and stripe information
  *
  * Must be called inside conf lock.
  */
 static void raidxor_safe_free_conf(raidxor_conf_t *conf) {
-	unsigned long i;
+	unsigned int i;
 
 	CHECK_ARG_RET(conf);
 
@@ -306,6 +350,11 @@ static void raidxor_safe_free_conf(raidxor_conf_t *conf) {
 	if (conf->cache != NULL) {
 		raidxor_free_cache(conf->cache);
 		conf->cache = NULL;
+	}
+
+	for (i = 0; i < conf->n_units; ++i) {
+		raidxor_safe_free_encoding(&conf->units[i]);
+		raidxor_safe_free_decoding(&conf->units[i]);
 	}
 }
 

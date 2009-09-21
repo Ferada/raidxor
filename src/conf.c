@@ -10,7 +10,7 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 	resource_t **resources;
 	stripe_t **stripes;
 	disk_info_t *unit;
-	unsigned long i, j, old_data_units = 0;
+	unsigned int i, j, old_data_units = 0;
 	char buffer[32];
 	mddev_t *mddev = conf->mddev;
 
@@ -22,14 +22,14 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 
 	if (conf->n_resources <= 0 || conf->units_per_resource <= 0) {
 		printk(KERN_EMERG "raidxor: need number of resources or "
-		       "units per resource: %lu or %lu\n",
+		       "units per resource: %u or %u\n",
 		       conf->n_resources, conf->units_per_resource);
 		goto out;
 	}
 
 	if (conf->n_resources * conf->units_per_resource != conf->n_units) {
 		printk(KERN_EMERG
-		       "raidxor: parameters don't match %lu * %lu != %lu\n",
+		       "raidxor: parameters don't match %u * %u != %u\n",
 		       conf->n_resources, conf->units_per_resource,
 		       conf->n_units);
 		goto out;
@@ -38,7 +38,7 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 	for (i = 0; i < conf->n_units; ++i) {
 		if (conf->units[i].redundant == -1) {
 			printk(KERN_EMERG
-			       "raidxor: unit %lu, %s is not initialized\n",
+			       "raidxor: unit %u, %s is not initialized\n",
 			       i, bdevname(conf->units[i].rdev->bdev, buffer));
 			goto out;
 		}
@@ -86,13 +86,13 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 	printk(KERN_EMERG "now calculating stripes and sizes\n");
 
 	for (i = 0; i < conf->n_stripes; ++i) {
-		printk(KERN_EMERG "direct: stripes[%lu] %p\n", i, stripes[i]);
+		printk(KERN_EMERG "direct: stripes[%u] %p\n", i, stripes[i]);
 		stripes[i]->n_units = conf->n_units / conf->n_stripes;
 		printk(KERN_EMERG "using %d units per stripe\n", stripes[i]->n_units);
 		printk(KERN_EMERG "going through %d units\n", stripes[i]->n_units);
 
 		for (j = 0; j < stripes[i]->n_units; ++j) {
-			printk(KERN_EMERG "using unit %lu for stripe %lu, index %lu\n",
+			printk(KERN_EMERG "using unit %u for stripe %u, index %u\n",
 			       i + conf->units_per_resource * j, i, j);
 			unit = &conf->units[i + conf->units_per_resource * j];
 
@@ -108,8 +108,8 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 		}
 		else if (old_data_units != stripes[i]->n_data_units) {
 			printk(KERN_EMERG "number of data units on two stripes"
-			       " are different: %lu on stripe %d where we"
-			       " assumed %lu\n",
+			       " are different: %u on stripe %d where we"
+			       " assumed %u\n",
 			       i, stripes[i]->n_data_units, old_data_units);
 			goto out_free_stripes;
 		}
@@ -175,7 +175,7 @@ raidxor_show_units_per_resource(mddev_t *mddev, char *page)
 	raidxor_conf_t *conf = mddev_to_conf(mddev);
 
 	if (conf)
-		return sprintf(page, "%lu\n", conf->units_per_resource);
+		return sprintf(page, "%u\n", conf->units_per_resource);
 	else
 		return -ENODEV;
 }
@@ -211,7 +211,7 @@ raidxor_show_number_of_resources(mddev_t *mddev, char *page)
 	raidxor_conf_t *conf = mddev_to_conf(mddev);
 
 	if (conf)
-		return sprintf(page, "%lu\n", conf->n_resources);
+		return sprintf(page, "%u\n", conf->n_resources);
 	else
 		return -ENODEV;
 }
@@ -253,6 +253,7 @@ raidxor_store_decoding(mddev_t *mddev, const char *page, size_t len)
 	raidxor_conf_t *conf = mddev_to_conf(mddev);
 	unsigned char index, length, i, red;
 	decoding_t *decoding;
+	unsigned long flags = 0;
 	size_t oldlen = len;
 
 	if (len >= PAGE_SIZE)
@@ -291,7 +292,10 @@ raidxor_store_decoding(mddev_t *mddev, const char *page, size_t len)
 			decoding->units[i] = &conf->units[red];
 		}
 
+		WITHLOCKCONF(conf, flags, {
+		raidxor_safe_free_decoding(&conf->units[index]);
 		conf->units[index].decoding = decoding;
+		});
 
 		printk(KERN_INFO "read decoding info\n");
 	}
@@ -316,6 +320,7 @@ raidxor_store_encoding(mddev_t *mddev, const char *page, size_t len)
 	unsigned char index, redundant, length, i, red;
 	encoding_t *encoding;
 	size_t oldlen = len;
+	unsigned long flags = 0;
 
 	if (len >= PAGE_SIZE)
 		return -EINVAL;
@@ -366,7 +371,10 @@ raidxor_store_encoding(mddev_t *mddev, const char *page, size_t len)
 			encoding->units[i] = &conf->units[red];
 		}
 
+		WITHLOCKCONF(conf, flags, {
+		raidxor_safe_free_encoding(&conf->units[index]);
 		conf->units[index].encoding = encoding;
+		});
 
 		printk(KERN_INFO "read redundant unit encoding info\n");
 	}

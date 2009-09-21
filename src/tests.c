@@ -56,7 +56,7 @@ static int raidxor_test_case_sector_to_stripe(void)
 	return 0;
 }
 
-static int raidxor_test_case_xor_combine(void)
+static int raidxor_test_case_xor_combine_encode(void)
 {
 	unsigned long i;
 	struct bio bio1, bio2, bio3;
@@ -89,7 +89,7 @@ static int raidxor_test_case_xor_combine(void)
 			sizeof(struct bio *) * 3, GFP_NOIO);
 	if (!rxbio) {
 		printk(KERN_INFO "raidxor: allocation failed in test case"
-		       " xor_combine\n");
+		       " xor_combine_encode\n");
 		return 1;
 	}
 
@@ -103,7 +103,7 @@ static int raidxor_test_case_xor_combine(void)
 	if (!encoding) {
 		kfree(rxbio);
 		printk(KERN_INFO "raidxor: allocation failed in test case"
-		       " xor_combine\n");
+		       " xor_combine_encode\n");
 		return 1;
 	}
 
@@ -146,7 +146,7 @@ static int raidxor_test_case_xor_combine(void)
 
 	xor2 = 15 ^ 23;
 
-	raidxor_xor_combine(&bio3, rxbio, encoding);
+	raidxor_xor_combine_encode(&bio3, rxbio, encoding);
 
 	data = __bio_kmap_atomic(&bio3, 0, KM_USER0);
 	for (i = 0; i < PAGE_SIZE; ++i) {
@@ -244,7 +244,7 @@ static int raidxor_test_case_find_bio(void)
 			sizeof(struct bio *) * 3, GFP_NOIO);
 	if (!rxbio) {
 		printk(KERN_INFO "raidxor: allocation failed in test case"
-		       " xor_combine\n");
+		       " xor_combine_encode\n");
 		return 1;
 	}
 
@@ -371,9 +371,9 @@ static int raidxor_run_test_cases(void)
 		return 1;
 	}
 
-	printk(KERN_INFO "raidxor: running test case xor_combine\n");
-	if (raidxor_test_case_xor_combine()) {
-		printk(KERN_INFO "raidxor: test case xor_combine failed");
+	printk(KERN_INFO "raidxor: running test case xor_combine_encode\n");
+	if (raidxor_test_case_xor_combine_encode()) {
+		printk(KERN_INFO "raidxor: test case xor_combine_encode failed");
 		return 1;
 	}
 

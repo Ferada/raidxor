@@ -214,8 +214,12 @@ struct decoding {
 	disk_info_t *units[0];
 };
 
-static int raidxor_xor_combine(struct bio *bioto, raidxor_bio_t *rxbio,
-			       encoding_t *encoding);
+static int raidxor_xor_combine_encode(struct bio *bioto,
+				      raidxor_bio_t *rxbio,
+				      encoding_t *encoding);
+static int raidxor_xor_combine_decode(struct bio *bioto,
+				      raidxor_bio_t *rxbio,
+				      decoding_t *decoding);
 
 
 /**
@@ -296,14 +300,14 @@ struct raidxor_conf {
 
 	unsigned int configured;
 
-	unsigned long units_per_resource;
-	unsigned long n_resources;
+	unsigned int units_per_resource;
+	unsigned int n_resources;
 	resource_t **resources;
 
-	unsigned long n_stripes;
+	unsigned int n_stripes;
 	stripe_t **stripes;
 
-	unsigned long n_units;
+	unsigned int n_units;
 	disk_info_t units[0];
 };
 
