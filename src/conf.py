@@ -260,10 +260,6 @@ check_units ()
 check_raid ()
 check_rect_layout ()
 
-global number_of_resources, units_per_resource
-number_of_resources = 0
-units_per_resource = 0
-
 def block_name (device):
     return os.path.basename (device)
 
@@ -303,7 +299,7 @@ if [[ ! $? -eq 0 ]]; then exit; fi
     generate_encoding_shell_script (out)
     out.write (
 """
-echo %s > /sys/block/%s/md/number_of_resources
+echo %s > /sys/block/%s/md/resources_per_stripe
 echo %s > /sys/block/%s/md/units_per_resource
 """ % (len (resources), block_name (raid_device), len (resources[0].units), block_name (raid_device)))
 
