@@ -10,6 +10,7 @@
 
 typedef struct disk_info disk_info_t;
 typedef struct encoding encoding_t;
+typedef struct decoding decoding_t;
 typedef struct raidxor_bio raidxor_bio_t;
 typedef struct raidxor_conf raidxor_conf_t;
 typedef struct stripe stripe_t;
@@ -165,6 +166,7 @@ static cache_t * raidxor_alloc_cache(unsigned int n_lines,
  * @redundant: contains 1 if it is a redundant unit, 0 if not, -1 if
  *             uninitialized
  * @encoding: contains the encoding equation if it's a redundant unit
+ * @decoding: contains the decoding equation if available
  * @resource: the resource this unit belongs to
  * @stripe: the stripe this unit belongs to
  *
@@ -179,6 +181,7 @@ struct disk_info {
 
 	int redundant;
 	encoding_t *encoding;
+	decoding_t *decoding;
 
 	resource_t *resource;
 	stripe_t *stripe;
@@ -197,6 +200,16 @@ struct disk_info {
  * compute the redundancy information.
  */
 struct encoding {
+	unsigned int n_units;
+	disk_info_t *units[0];
+};
+
+/**
+ * struct decoding - decoding information for a unit
+ * @n_units: the number of contained units
+ * @units: the actual units
+ */
+struct decoding {
 	unsigned int n_units;
 	disk_info_t *units[0];
 };

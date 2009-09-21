@@ -242,6 +242,68 @@ raidxor_store_number_of_resources(mddev_t *mddev, const char *page, size_t len)
 }
 
 static ssize_t
+raidxor_show_decoding(mddev_t *mddev, char *page)
+{
+	return -EIO;
+}
+
+static ssize_t
+raidxor_store_decoding(mddev_t *mddev, const char *page, size_t len)
+{
+	raidxor_conf_t *conf = mddev_to_conf(mddev);
+	unsigned char index, length, i, red;
+	decoding_t *decoding;
+	size_t oldlen = len;
+
+	if (len >= PAGE_SIZE)
+		return -EINVAL;
+	if (!conf)
+		return -ENODEV;
+
+	for (; len >= 1;) {
+		index = *page++;
+		--len;
+
+		if (index >= conf->n_units)
+			goto out;
+
+		if (len < 1)
+			goto out;
+
+		length = *page++;
+		--len;
+
+		if (length > len)
+			goto out;
+
+		decoding = kzalloc(sizeof(decoding_t) +
+				   sizeof(disk_info_t *) * length, GFP_NOIO);
+		if (!decoding)
+			goto out;
+
+		for (i = 0; i < length; ++i) {
+			red = *page++;
+			--len;
+
+			if (red >= conf->n_units)
+				goto out_free_encoding;
+
+			decoding->units[i] = &conf->units[red];
+		}
+
+		conf->units[index].decoding = decoding;
+
+		printk(KERN_INFO "read decoding info\n");
+	}
+
+	return oldlen;
+out_free_encoding:
+	kfree(decoding);
+out:
+	return -EINVAL;
+}
+
+static ssize_t
 raidxor_show_encoding(mddev_t *mddev, char *page)
 {
 	return -EIO;
@@ -333,10 +395,16 @@ raidxor_encoding = __ATTR(encoding, S_IRUGO | S_IWUSR,
 			  raidxor_show_encoding,
 			  raidxor_store_encoding);
 
+static struct md_sysfs_entry
+raidxor_decoding = __ATTR(encoding, S_IRUGO | S_IWUSR,
+			  raidxor_show_decoding,
+			  raidxor_store_decoding);
+
 static struct attribute * raidxor_attrs[] = {
 	(struct attribute *) &raidxor_number_of_resources,
 	(struct attribute *) &raidxor_units_per_resource,
 	(struct attribute *) &raidxor_encoding,
+	(struct attribute *) &raidxor_decoding,
 	NULL
 };
 
@@ -354,13 +422,13 @@ static void raidxor_status(struct seq_file *seq, mddev_t *mddev)
 
 	for (i = 0; i < conf->n_stripes; ++i) {
 		seq_printf(seq, "stripe %u with size %llu\n", i,
-			   conf->stripes[i]->size);
+			   (unsigned long long) conf->stripes[i]->size);
 	}
 
 	for (i = 0; i < conf->cache->n_lines; ++i) {
 		seq_printf(seq, "line %u: %s at sector %llu\n", i,
 			   raidxor_cache_line_status(conf->cache->lines[i]),
-			   conf->cache->lines[i]->sector);
+			   (unsigned long long) conf->cache->lines[i]->sector);
 	}
 
 	/* seq_printf(seq, " I'm feeling fine"); */

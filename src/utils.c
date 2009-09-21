@@ -38,7 +38,7 @@ static void raidxor_cache_print_status(cache_t *cache)
 	for (i = 0; i < cache->n_lines; ++i) {
 		printk(KERN_EMERG "line %u: %s at sector %llu, has %s request\n", i,
 		       raidxor_cache_line_status(cache->lines[i]),
-		       cache->lines[i]->sector,
+		       (unsigned long long) cache->lines[i]->sector,
 		       cache->lines[i]->waiting ? "has at least one" : "has no");
 	}
 }

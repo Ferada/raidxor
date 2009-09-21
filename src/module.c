@@ -709,7 +709,6 @@ static void raidxor_finish_lines(cache_t *cache)
 	}
 
 	printk(KERN_EMERG "freed %u lines\n", freed);
-/*	cache->n_waiting -= freed; */
 
 out:
 	do {} while (0);
@@ -822,7 +821,6 @@ break_unlocked:
 	return done;
 out_unlock:
 	UNLOCKCONF(cache->conf, flags);
-out:
 	return 0;
 }
 
@@ -1102,7 +1100,6 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 	raidxor_conf_t *conf;
 	cache_t *cache;
 	stripe_t *stripe;
-	struct bio_pair *split;
 	unsigned int line;
 	sector_t aligned_sector, strip_sectors, mod, div;
 	unsigned long flags = 0;
