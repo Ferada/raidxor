@@ -171,17 +171,20 @@ static void raidxor_cache_commit_bio(cache_t *cache, unsigned int n)
 {
 	unsigned int i;
 	raidxor_bio_t *rxbio;
+	stripe_t *stripe;
 
 	CHECK_ARG_RET(cache);
 	CHECK_PLAIN_RET(n < cache->n_lines);
 	CHECK_PLAIN_RET(cache->lines[n]);
 
 	rxbio = cache->lines[n]->rxbio;
-
 	CHECK_PLAIN_RET(rxbio);
 
+	stripe = rxbio->stripe;
+	CHECK_PLAIN_RET(stripe);
+
 	for (i = 0; i < rxbio->n_bios; ++i)
-		if (rxbio->bios[i])
+		if (!test_bit(Faulty, &stripe->units[i]->rdev->flags))
 			generic_make_request(rxbio->bios[i]);
 }
 
@@ -226,6 +229,9 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 	rxbio->cache = cache;
 	rxbio->stripe = stripe;
 	rxbio->line = n;
+	rxbio->remaining = rxbio->n_bios;
+
+	line->rxbio = rxbio;
 
 	CHECK_LINE;
 
@@ -235,28 +241,14 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 		printk(KERN_EMERG "i = %u, l = %u, rxbio->n_bios = %u, stripe->n_units = %u\n", i, l, rxbio->n_bios, stripe->n_units);
 		/* we also load the redundant pages */
 
-		printk(KERN_EMERG "stripe %p\n", stripe);
-		printk(KERN_EMERG "stripe->units %p\n", stripe->units);
-		printk(KERN_EMERG "stripe->units[%u] %p\n", i, stripe->units[i]);
-		printk(KERN_EMERG "stripe->units[%u]->rdev %p\n", i, stripe->units[i]->rdev);
-
-		if (test_bit(Faulty, &stripe->units[i]->rdev->flags))
-			continue;
-
-		CHECK_LINE;
-
 		/* only one chunk */
 		rxbio->bios[i] = bio = bio_alloc(GFP_NOIO, n_chunk_mult);
 		CHECK_ALLOC(rxbio->bios[i]);
-
-		CHECK_LINE;
 
 		bio->bi_rw = READ;
 		bio->bi_private = rxbio;
 		bio->bi_bdev = stripe->units[i]->rdev->bdev;
 		bio->bi_end_io = raidxor_end_load_line;
-
-		CHECK_LINE;
 
 		/* bio->bi_sector = actual_sector / stripe->n_data_units + */
 		/* 	stripe->units[i]->rdev->data_offset; */
@@ -266,15 +258,11 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 
 		bio->bi_size = n_chunk_mult * PAGE_SIZE;
 
-		CHECK_LINE;
-
 		/* printk(KERN_EMERG "cache->n_buffers = %d, n_red_buffers = %d\n",
 		       cache->n_buffers, cache->n_red_buffers); */
 		/* assign pages */
 		bio->bi_vcnt = n_chunk_mult;
 		for (j = 0; j < n_chunk_mult; ++j) {
-			CHECK_LINE;
-
 			if (stripe->units[i]->redundant) {
 				k = cache->n_buffers + l * n_chunk_mult + j;
 				/* printk(KERN_EMERG "[%d], red k = %d\n", j, k); */
@@ -293,12 +281,16 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 
 		if (stripe->units[i]->redundant)
 			++l;
+
+		if (test_bit(Faulty, &stripe->units[i]->rdev->flags)) {
+			printk(KERN_EMERG "got faulty drive during load\n");
+			--rxbio->remaining;
+			if (!stripe->units[i]->redundant)
+				rxbio->faulty = 1;
+			continue;
+		}
 	}
 
- 	/* CHECK_LINE; */
-
-	line->rxbio = rxbio;
-	rxbio->remaining = rxbio->n_bios;
 	++cache->active_lines;
 
 	printk(KERN_EMERG "with %d bios\n", rxbio->n_bios);
@@ -424,7 +416,7 @@ static void raidxor_end_load_line(struct bio *bio, int error)
 	unsigned int index, data_index, wake = 0;
 	unsigned long flags = 0;
 
- 	/* CHECK_LINE; */
+	CHECK_FUN(raidxor_end_load_line);
 
 	CHECK_ARG_RET(bio);
 
@@ -451,7 +443,7 @@ static void raidxor_end_load_line(struct bio *bio, int error)
 	if (error) {
 		WITHLOCKCONF(conf, flags, {
 		if (!stripe->units[index]->redundant)
-			line->status = CACHE_LINE_FAULTY;
+			rxbio->faulty = 1;
 		});
 		md_error(conf->mddev, stripe->units[index]->rdev);
 	}
@@ -460,9 +452,11 @@ static void raidxor_end_load_line(struct bio *bio, int error)
 
 	WITHLOCKCONF(conf, flags, {
 	if ((--rxbio->remaining) == 0) {
-		printk(KERN_EMERG "last callback for line %d, waking thread\n",
-		       rxbio->line);
-		if (line->status == CACHE_LINE_LOADING) {
+		printk(KERN_EMERG "last callback for line %d, waking thread, %u faulty\n",
+		       rxbio->line, rxbio->faulty);
+		if (rxbio->faulty)
+			line->status = CACHE_LINE_FAULTY;
+		else  {
 			line->status = CACHE_LINE_UPTODATE;
 			line->rxbio = NULL;
 			kfree(rxbio);
@@ -486,6 +480,8 @@ static void raidxor_end_writeback_line(struct bio *bio, int error)
 	stripe_t *stripe;
 	unsigned int index, data_index, wake = 0;
 	unsigned long flags = 0;
+
+	CHECK_FUN(raidxor_end_writeback_line);
 
 	CHECK_ARG_RET(bio);
 
@@ -758,7 +754,8 @@ static void raidxor_invalidate_decoding(raidxor_conf_t *conf,
 	}
 
 	for (i = 0; i < stripe->n_units; ++i)
-		if (raidxor_find_unit_decoding(stripe->units[i]->decoding,
+		if (stripe->units[i]->decoding &&
+		    raidxor_find_unit_decoding(stripe->units[i]->decoding,
 					       unit)) {
 			raidxor_safe_free_decoding(stripe->units[i]);
 			printk(KERN_EMERG "raidxor: unit %u requests decoding"
@@ -886,6 +883,8 @@ static void raidxor_handle_requests(cache_t *cache, unsigned int n_line)
 	struct bio *bio;
 	unsigned long flags;
 
+	CHECK_FUN(raidxor_handle_requests);
+
 	CHECK_ARG_RET(cache);
 	CHECK_PLAIN_RET(n_line < cache->n_lines);
 
@@ -929,6 +928,8 @@ static int raidxor_handle_line(cache_t *cache, unsigned int n_line)
 	cache_line_t *line;
 	unsigned long flags;
 	unsigned int commit = 0, done = 0;
+
+	CHECK_FUN(raidxor_handle_line);
 
 	CHECK_ARG_RET_VAL(cache);
 	CHECK_PLAIN_RET_VAL(n_line < cache->n_lines);

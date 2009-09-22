@@ -362,6 +362,7 @@ struct raidxor_bio {
 	unsigned int remaining;
 	cache_t *cache;
 	unsigned int line;
+	unsigned int faulty;
 
 	stripe_t *stripe;
 
