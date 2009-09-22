@@ -20,6 +20,9 @@ parser.add_option ("--watch", dest = "mode",
 parser.add_option ("--cauchyrs", dest = "cauchyrs",
                    default = "", metavar = "FILE",
                    help = "specifies cauchyrs executable file")
+parser.add_option ("--mdadm", dest = "mdadm",
+		   default = "./mdadm", metavar = "FILE",
+		   help = "specifies mdadm executable file")
 parser.add_option ("-n", "--noscript", dest = "script",
                    action = "store_false", default = True,
                    help = "writes no shell script to stdout")
@@ -279,10 +282,10 @@ def generate_stop_shell_script (out):
     out.write (
 """#!/bin/sh
 
-MDADM=/home/rudolf/src/mdadm-2.6.8/mdadm
+MDADM=%s
 
 $MDADM --manage %s -S
-""" % (raid_device))
+""" % (opts.mdadm, raid_device))
 
 def generate_start_shell_script (out):
     units_formatted = ""
@@ -291,13 +294,13 @@ def generate_start_shell_script (out):
     out.write (
 """#!/bin/sh
 
-MDADM=/home/rudolf/src/mdadm-2.6.8/mdadm
+MDADM=%s
 
 $MDADM -v -v --create %s -R -c %s --level=xor \\
 	--raid-devices=%s%s
 if [[ ! $? -eq 0 ]]; then exit; fi
 
-""" % (raid_device, chunk_size / 1024, len (units), units_formatted))
+""" % (opts.mdadm, raid_device, chunk_size / 1024, len (units), units_formatted))
     generate_encoding_shell_script (out)
     out.write (
 """
