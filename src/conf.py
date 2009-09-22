@@ -1,6 +1,6 @@
 #!/bin/env python
 
-import sys, os, os.path, fileinput, re
+import sys, os, os.path, fileinput, re, popen2
 from optparse import OptionParser
 
 parser = OptionParser ()
@@ -14,12 +14,15 @@ parser.add_option ("--stop", dest = "mode",
 parser.add_option ("--restart", dest = "mode",
                    action = "store_const", const = "restart",
                    help = "restart the raid")
-parser.add_option ("--watch", dest = "mode",
-                   action = "store_const", const = "watch",
+parser.add_option ("--decode", dest = "mode",
+                   action = "store_const", const = "decode",
                    help = "serves kernel decoding requests")
 parser.add_option ("--cauchyrs", dest = "cauchyrs",
                    default = "", metavar = "FILE",
                    help = "specifies cauchyrs executable file")
+parser.add_option ("--cauchyrs-opts", dest = "cauchyopts",
+		   default = "", metavar = "OPTS",
+		   help = "specifies the options for cauchyrs")
 parser.add_option ("--mdadm", dest = "mdadm",
 		   default = "./mdadm", metavar = "FILE",
 		   help = "specifies mdadm executable file")
@@ -44,7 +47,11 @@ The format for the specification is as follows:
   UNITS u0, u1, ..., un
   UNIT_DESCR u0, /dev/bar
 
-  REDUNDANCY destunit = XOR(u4, u2, ..., un)""")
+  REDUNDANCY destunit = XOR(u4, u2, ..., un)
+
+and additionally for decoding equations
+
+  DECODING destunit = XOR(u4, u2, ..., un)""")
 
 (opts, args) = parser.parse_args ()
 
@@ -55,20 +62,28 @@ resources = []
 units = []
 
 class resource ():
-    def __init__ (self, name, device = None, units = []):
+    def __init__ (self, name, device = None, units = [], faulty = False):
         self.name = name
         self.device = device
         self.units = units
+        self.faulty = faulty
     def __repr__ (self):
-        return "<resource %s on %s, %s>" % (self.name, self.device, [unit.name for unit in self.units])
+        title = ""
+        if self.faulty:
+            if title != "":
+                title += ", "
+            title += "faulty "
+        return "<%sresource %s on %s, %s>" % (title, self.name, self.device, [unit.name for unit in self.units])
 
 class unit ():
-    def __init__ (self, name, device = None, redundant = False, encoding = []):
+    def __init__ (self, name, device = None, redundant = False, encoding = [], decoding = [], resource = None):
         self.name = name
         self.device = device
         self.redundant = redundant
         self.encoding = encoding
+        self.decoding = None
         self.faulty = False
+        self.resource = resource
     def __repr__ (self):
         title = ""
         red = ""
@@ -76,10 +91,12 @@ class unit ():
             title = "redundant "
             red = ", %s" % [unit.name for unit in self.encoding]
         if self.faulty:
-            title = title + ", faulty "
+            if title != "":
+                title += ", "
+            title += "faulty "
         return "<%sunit %s on %s%s>" % (title, self.name, self.device, red)
     def mdname (self):
-        os.path.basename (self.device)
+        return os.path.basename (self.device)
 
 def die (msg):
     sys.stderr.write (msg + "\n")
@@ -100,7 +117,7 @@ match = decorate_matcher
 def convert_resources ():
     global resources
     for res in resources:
-        res.units = [find_unit (name) for name in res.units]
+        res.units = [find_unit (unit.name) for unit in res.units]
 
 def parse_units (units):
     return [unit for unit in unit_re.split (units) if unit != ""]
@@ -116,7 +133,7 @@ def find_unit (name):
         die ("unknown unit '%s'" % name)
     return unit[0]
 
-unit_re = re.compile("\s*(\w+)\s*,\s*")
+unit_re = re.compile ("\s*(\w+)\s*,\s*")
 
 @match(re.compile ("^RAID_DESCR\s+([^\s]+)\s*,\s*(\d+)\s*$"))
 def handle_raid_desc (line, match):
@@ -172,7 +189,7 @@ def handle_unit_desc (line, match):
         sys.stderr.write ("overwriting description for %s\n" % unit.name)
     unit.device = device
 
-@match(re.compile ("^REDUNDANCY\s+(\w+)\s*=\s*XOR\s*\(([^\)]*)\)"))
+@match(re.compile ("^REDUNDANCY\s+(\w+)\s*=\s*\(([^\)]*)\)"))
 def handle_red (line, match):
     global units
     (name, red) = match.groups ()
@@ -182,6 +199,16 @@ def handle_red (line, match):
     if unit.encoding:
         sys.stderr.write ("overwriting encoding for %s\n" % unit.name)
     unit.encoding = convert_units (parse_units (red))
+
+@match(re.compile ("^DECODING\s+(\w+)\s*=\s*\(([^\)]*)\)"))
+def handle_dec (line, match):
+    global units
+    (name, dec) = match.groups ()
+
+    unit = find_unit (name)
+    if unit.decoding:
+        sys.stderr.write ("overwriting decoding for %s\n" % unit.name)
+    unit.decoding = convert_units (parse_units (dec))
 
 matchers = [
     handle_raid_desc,
@@ -211,6 +238,20 @@ for line in fileinput.input (["-"]):
         continue
     else:
         sys.stderr.write ("invalid line '%s'\n" % line)
+
+def fixup_resources_units ():
+    global units, resources
+    for unit in units:
+        for resource in resources:
+            try:
+                match = resource.units.index (unit.name)
+                resource.units[match] = unit
+                unit.resource = resource
+                break
+            except ValueError:
+                pass
+
+fixup_resources_units ()
 
 def check_double (list, desc, obj = None):
     num = {}
@@ -271,6 +312,8 @@ def block_name (device):
     return os.path.basename (device)
 
 def generate_encoding_shell_script (out):
+    global units
+
     for i in range (0, len (units)):
         if not units[i].redundant:
             out.write ("""echo -en '\\0%s\\00""" % (oct (i)))
@@ -279,6 +322,17 @@ def generate_encoding_shell_script (out):
             for unit in units[i].encoding:
                 out.write ("""\\0%s""" % (oct (units.index (unit))))
         out.write ("' > /sys/block/%s/md/encoding\n" % (block_name (raid_device)))
+
+def generate_decoding_shell_script (out):
+    global units
+
+    for i in range (0, len (units)):
+        if not units[i].faulty:
+            continue
+        out.write ("""echo -en '\\0%s\\0%s""" % (oct (i), oct (len (units[i].decoding))))
+        for unit in units[i].decoding:
+            out.write ("""\\0%s""" % (oct (units.index (unit))))
+        out.write ("' > /sys/block/%s/md/decoding\n" % (block_name (raid_device)))
 
 def generate_stop_shell_script (out):
     out.write (
@@ -311,8 +365,33 @@ echo %s > /sys/block/%s/md/units_per_resource
 """ % (len (resources), block_name (raid_device), len (resources[0].units), block_name (raid_device)))
 
 def parse_faulty ():
+    global units
+
     for unit in units:
-        print "dev-%s" % unit.mdname ()
+	path = "/sys/block/%s/md/dev-%s/state" % (block_name (raid_device), unit.mdname ())
+	for line in fileinput.input (path):
+            unit.faulty = (line.find("faulty") >= 0)
+            if unit.faulty:
+                unit.resource.faulty = True
+            fileinput.close ()
+            break
+
+def parse_cauchyrs ():
+    global resources
+
+    failed = ""
+    n = 0
+    for i in range (0, len (resources)):
+        print resources[i]
+        if resources[i].faulty:
+            failed += " -f%s=%s" % (n, i)
+            n += 1
+    cmdline = "%s %s %s" % (opts.cauchyrs, opts.cauchyopts, failed)
+    print cmdline
+
+    (subout, subin) = popen2.popen2 (cmdline)
+    for line in subout:
+        handle_dec (line)
 
 files = []
 if opts.script:
@@ -325,8 +404,11 @@ if opts.mode == "stop" or opts.mode == "restart":
     [generate_stop_shell_script (file) for file in files]
 if opts.mode == "start" or opts.mode == "start":
     [generate_start_shell_script (file) for file in files]
-if opts.mode == "watch":
+if opts.mode == "decode":
     print "cauchyrs executable at %s" % opts.cauchyrs
     parse_faulty ()
+    if any ([resource.faulty for resource in resources]):
+        parse_cauchyrs ()
+        [generate_decoding_shell_script (file) for file in files]
 
 sys.exit (0)

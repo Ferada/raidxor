@@ -698,6 +698,8 @@ static void raidxor_cache_recover(cache_t *cache, unsigned int n_line)
 	stripe_t *stripe;
 	unsigned long flags = 0;
 
+	CHECK_FUN(raidxor_cache_recover);
+
 	CHECK_ARG_RET(cache);
 	CHECK_PLAIN_RET(n_line < cache->n_lines);
 
@@ -929,7 +931,7 @@ static int raidxor_handle_line(cache_t *cache, unsigned int n_line)
 	unsigned long flags;
 	unsigned int commit = 0, done = 0;
 
-	CHECK_FUN(raidxor_handle_line);
+	/* CHECK_FUN(raidxor_handle_line); */
 
 	CHECK_ARG_RET_VAL(cache);
 	CHECK_PLAIN_RET_VAL(n_line < cache->n_lines);
@@ -1011,15 +1013,12 @@ static void raidxord(mddev_t *mddev)
 		/* go through all cache lines, see if any waiting requests
 		   can be handled */
 		for (i = 0, done = 1; i < cache->n_lines; ++i) {
-			CHECK_LINE;
 			/* only break if we have handled at least one line */
 			if (raidxor_handle_line(cache, i)) {
 				++handled;
 				done = 0;
 			}
 		}
-
-		CHECK_LINE;
 
 		/* also, if somebody is waiting for a free line, try to make
 		   one (or more) available.  freeing some lines doesn't count
@@ -1028,13 +1027,9 @@ static void raidxord(mddev_t *mddev)
 		   are notified and signal us back later on */
 
 		if (cache->n_waiting > 0) {
-			CHECK_LINE;
 			raidxor_finish_lines(cache);
 		}
-		CHECK_LINE;
 	}
-
-	CHECK_LINE;
 
 	WITHLOCKCONF(conf, flags, {
 	raidxor_cache_print_status(cache);
