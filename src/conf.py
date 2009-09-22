@@ -75,6 +75,8 @@ class unit ():
         if self.faulty:
             title = title + ", faulty "
         return "<%sunit %s on %s%s>" % (title, self.name, self.device, red)
+    def mdname (self):
+        os.path.basename (self.device)
 
 def die (msg):
     sys.stderr.write (msg + "\n")
@@ -307,7 +309,7 @@ echo %s > /sys/block/%s/md/units_per_resource
 
 def parse_faulty ():
     for unit in units:
-        print unit
+        print "dev-%s" % unit.mdname ()
 
 files = []
 if opts.script:
