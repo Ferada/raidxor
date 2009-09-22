@@ -1253,6 +1253,7 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 
 	printk(KERN_EMERG "virtual sector %llu, length %u\n",
 	       (unsigned long long) bio->bi_sector, bio->bi_size);
+	CHECK_STRIPE(conf);
 
 	if (test_bit(CONF_STOPPING, &conf->flags))
 		goto out_unlock;
@@ -1263,6 +1264,7 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 	CHECK_PLAIN(stripe);
 	strip_sectors = (conf->chunk_size >> 9) * stripe->n_data_units;
 
+	CHECK_STRIPE(conf);
 
 	aligned_sector = bio->bi_sector;
 
@@ -1275,6 +1277,7 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 	/* printk(KERN_EMERG "aligned_sector %llu, bio->bi_sector %llu\n",
 	       aligned_sector, bio->bi_sector); */
 
+	CHECK_STRIPE(conf);
 
 	/* checked assumption is: aligned_sector is aligned to
 	   strip/cache line, bio->bi_sector is the offset inside this strip
@@ -1321,6 +1324,8 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 	if (!raidxor_cache_find_line(cache, aligned_sector, &line))
 		goto out_unlock;
 
+	CHECK_STRIPE(conf);
+
 	printk(KERN_EMERG "found available line %u\n", line);
 
 	if (cache->lines[line]->status == CACHE_LINE_CLEAN ||
@@ -1329,9 +1334,15 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 		CHECK_PLAIN(!raidxor_cache_make_ready(cache, line));
 		CHECK_PLAIN(!raidxor_cache_make_load_me(cache, line, aligned_sector));
 	}
+
+	CHECK_STRIPE(conf);
+
 	/* TODO: which states are unacceptable? */
 	/* pack the request somewhere in the cache */
 	raidxor_cache_add_request(cache, line, bio);
+
+	CHECK_STRIPE(conf);
+
 	});
 /*	spin_unlock_irq(&conf->device_lock); */
 

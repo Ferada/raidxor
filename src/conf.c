@@ -160,6 +160,8 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 	conf->stripes = stripes;
 	conf->configured = 1;
 
+	CHECK_STRIPE(conf);
+
 	return;
 
 out_free_stripes:
