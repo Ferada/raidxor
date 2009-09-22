@@ -438,8 +438,8 @@ struct raidxor_bio {
 #define CHECK_FUN(fun) \
 	printk(CHECK_LEVEL "raidxor: %s:%i: %s\n", __FILE__, __LINE__, #fun)
 #define CHECK_STRIPE(conf) \
-	printk(CHECK_LEVEL "raidxor: %s:%i: &stripes[0] == %p\n", __FILE__, \
-	       __LINE__, conf->stripes[0]);
+	printk(CHECK_LEVEL "raidxor: %s:%i: &stripes[0] == %p, stripes[0] == %p\n", __FILE__, \
+	       __LINE__, &conf->stripes[0], conf->stripes[0]);
 
 #endif
 

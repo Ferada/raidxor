@@ -98,8 +98,8 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 
 		for (j = 0; j < stripes[i]->n_units; ++j) {
 			printk(KERN_EMERG "using unit %u for stripe %u, index %u\n",
-			       i + conf->units_per_resource * j, i, j);
-			unit = &conf->units[i + conf->units_per_resource * j];
+			       i * conf->units_per_resource * conf->resources_per_stripe + j, i, j);
+			unit = &conf->units[i * conf->units_per_resource * conf->resources_per_stripe + j];
 
 			unit->stripe = stripes[i];
 

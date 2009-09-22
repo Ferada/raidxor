@@ -259,7 +259,10 @@ static cache_t * raidxor_alloc_cache(unsigned int n_lines,
 	CHECK_ALLOC_RET_NULL(cache);
 
 	for (i = 0; i < n_lines; ++i) {
-		cache->lines[i] = kzalloc(sizeof(cache_line_t), GFP_NOIO);
+		cache->lines[i] = kzalloc(sizeof(cache_line_t) +
+					  sizeof(struct page *) *
+					  (n_buffers + n_red_buffers),
+					  GFP_NOIO);
 		if (!cache->lines[i])
 			goto out_free_lines;
 		cache->lines[i]->status = CACHE_LINE_CLEAN;

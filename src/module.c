@@ -48,18 +48,31 @@ static int raidxor_cache_make_ready(cache_t *cache, unsigned int n_line)
 	CHECK_PLAIN_RET_VAL(line);
 
 	printk(KERN_EMERG "line status was %s\n", raidxor_cache_line_status(line));
+	printk(KERN_EMERG "line at %p\n", line);
+	CHECK_STRIPE(cache->conf);
 
 	if (line->status == CACHE_LINE_READY) return 0;
 	CHECK_PLAIN_RET_VAL(line->status == CACHE_LINE_CLEAN || 
 			    line->status == CACHE_LINE_UPTODATE);
+	CHECK_STRIPE(cache->conf);
+
+	printk(KERN_EMERG "cache->n_buffers == %u, cache->n_red_buffers == %u\n",
+	       cache->n_buffers, cache->n_red_buffers);
 
 	if (line->status == CACHE_LINE_CLEAN)
-		for (i = 0; i < cache->n_buffers + cache->n_red_buffers; ++i)
+		for (i = 0; i < cache->n_buffers + cache->n_red_buffers; ++i) {
+			CHECK_STRIPE(cache->conf);
+			printk(KERN_EMERG "line->buffers[%u] at %p, before %p\n", i, &line->buffers[i], line->buffers[i]);
 			if (!(line->buffers[i] = alloc_page(GFP_NOIO))) {
 				printk(KERN_EMERG "page allocation failed for line %u\n", n_line);
 				goto out_free_pages;
 			}
+			printk(KERN_EMERG "line->buffers[%u] is now %p\n", i, line->buffers[i]);
+			CHECK_STRIPE(cache->conf);
+		}
 	line->status = CACHE_LINE_READY;
+
+	CHECK_STRIPE(cache->conf);
 
 	return 0;
 out_free_pages:
@@ -83,6 +96,8 @@ static int raidxor_cache_make_load_me(cache_t *cache, unsigned int line,
 
 	cache->lines[line]->status = CACHE_LINE_LOAD_ME;
 	cache->lines[line]->sector = sector;
+
+	CHECK_STRIPE(cache->conf);
 
 	return 0;
 }
@@ -212,22 +227,36 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 	rxbio->stripe = stripe;
 	rxbio->line = n;
 
+	CHECK_LINE;
+
 	n_chunk_mult = cache->n_chunk_mult;
 
 	for (i = 0, l = 0; i < rxbio->n_bios; ++i) {
+		printk(KERN_EMERG "i = %u, l = %u, rxbio->n_bios = %u, stripe->n_units = %u\n", i, l, rxbio->n_bios, stripe->n_units);
 		/* we also load the redundant pages */
+
+		printk(KERN_EMERG "stripe %p\n", stripe);
+		printk(KERN_EMERG "stripe->units %p\n", stripe->units);
+		printk(KERN_EMERG "stripe->units[%u] %p\n", i, stripe->units[i]);
+		printk(KERN_EMERG "stripe->units[%u]->rdev %p\n", i, stripe->units[i]->rdev);
 
 		if (test_bit(Faulty, &stripe->units[i]->rdev->flags))
 			continue;
+
+		CHECK_LINE;
 
 		/* only one chunk */
 		rxbio->bios[i] = bio = bio_alloc(GFP_NOIO, n_chunk_mult);
 		CHECK_ALLOC(rxbio->bios[i]);
 
+		CHECK_LINE;
+
 		bio->bi_rw = READ;
 		bio->bi_private = rxbio;
 		bio->bi_bdev = stripe->units[i]->rdev->bdev;
 		bio->bi_end_io = raidxor_end_load_line;
+
+		CHECK_LINE;
 
 		/* bio->bi_sector = actual_sector / stripe->n_data_units + */
 		/* 	stripe->units[i]->rdev->data_offset; */
@@ -237,11 +266,14 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 
 		bio->bi_size = n_chunk_mult * PAGE_SIZE;
 
+		CHECK_LINE;
+
 		/* printk(KERN_EMERG "cache->n_buffers = %d, n_red_buffers = %d\n",
 		       cache->n_buffers, cache->n_red_buffers); */
 		/* assign pages */
 		bio->bi_vcnt = n_chunk_mult;
 		for (j = 0; j < n_chunk_mult; ++j) {
+			CHECK_LINE;
 
 			if (stripe->units[i]->redundant) {
 				k = cache->n_buffers + l * n_chunk_mult + j;
