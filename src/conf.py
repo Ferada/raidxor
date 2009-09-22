@@ -65,13 +65,15 @@ class unit ():
         self.device = device
         self.redundant = redundant
         self.encoding = encoding
+        self.faulty = False
     def __repr__ (self):
+        title = ""
+        red = ""
         if self.redundant:
             title = "redundant "
             red = ", %s" % [unit.name for unit in self.encoding]
-        else:
-            title = ""
-            red = ""
+        if self.faulty:
+            title = title + ", faulty "
         return "<%sunit %s on %s%s>" % (title, self.name, self.device, red)
 
 def die (msg):
@@ -303,6 +305,10 @@ echo %s > /sys/block/%s/md/resources_per_stripe
 echo %s > /sys/block/%s/md/units_per_resource
 """ % (len (resources), block_name (raid_device), len (resources[0].units), block_name (raid_device)))
 
+def parse_faulty ():
+    for unit in units:
+        print unit
+
 files = []
 if opts.script:
     files.append (sys.stdout)
@@ -316,5 +322,6 @@ if opts.mode == "start" or opts.mode == "start":
     [generate_start_shell_script (file) for file in files]
 if opts.mode == "watch":
     print "cauchyrs executable at %s" % opts.cauchyrs
+    parse_faulty ()
 
 sys.exit (0)
