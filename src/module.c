@@ -336,6 +336,9 @@ static int raidxor_cache_writeback_line(cache_t *cache, unsigned int n)
 	rxbio->cache = cache;
 	rxbio->stripe = stripe;
 	rxbio->line = n;
+	rxbio->remaining = rxbio->n_bios;
+
+	line->rxbio = rxbio;
 
 	n_chunk_mult = cache->n_chunk_mult;
 
@@ -343,12 +346,6 @@ static int raidxor_cache_writeback_line(cache_t *cache, unsigned int n)
 		/* only one chunk */
 		rxbio->bios[i] = bio = bio_alloc(GFP_NOIO, cache->n_chunk_mult);
 		CHECK_ALLOC(rxbio->bios[i]);
-
-		if (test_bit(Faulty, &stripe->units[i]->rdev->flags)) {
-			printk(KERN_INFO "raidxor: got a faulty drive"
-			       " during a request, skipping for now");
-			goto out_free_bio;
-		}
 
 		bio->bi_rw = WRITE;
 		bio->bi_private = rxbio;
@@ -382,6 +379,14 @@ static int raidxor_cache_writeback_line(cache_t *cache, unsigned int n)
 
 		if (stripe->units[i]->redundant)
 			++l;
+
+		if (test_bit(Faulty, &stripe->units[i]->rdev->flags)) {
+			printk(KERN_INFO "raidxor: got a faulty drive during writeback\n");
+			--rxbio->remaining;
+			if (!stripe->units[i]->redundant)
+				rxbio->faulty = 1;
+			continue;
+		}
 	}
 	
 	for (i = 0; i < rxbio->n_bios; ++i) {
@@ -391,8 +396,6 @@ static int raidxor_cache_writeback_line(cache_t *cache, unsigned int n)
 			goto out_free_bio;
 	}
 
-	line->rxbio = rxbio;
-	rxbio->remaining = rxbio->n_bios;
 	++cache->active_lines;
 
 	line->status = CACHE_LINE_WRITEBACK;
