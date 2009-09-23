@@ -1,8 +1,8 @@
 ifneq ($(KERNELRELEASE),)
 
-obj-m := test.o raidxor.o 
+obj-m := test.o raidxor.o
 
-raidxor-objs := module.o
+raidxor-objs := module.o fastxor.o
 
 else
 KDIR := /lib/modules/$(shell uname -r)/build

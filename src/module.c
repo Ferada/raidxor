@@ -4,6 +4,7 @@
 #include <linux/module.h>
 #include <linux/init.h>
 #include <asm/div64.h>
+#include <linux/raid/xor.h>
 
 #define DEBUG
 
@@ -12,7 +13,7 @@
 #include "utils.c"
 #include "conf.c"
 
-#define RAIDXOR_RUN_TESTCASES 1
+#define RAIDXOR_RUN_TESTCASES
 
 static int raidxor_cache_make_clean(cache_t *cache, unsigned int line)
 {
@@ -536,10 +537,14 @@ static void raidxor_xor_single(struct bio *bioto, struct bio *biofrom)
 	struct bio_vec *bvto, *bvfrom;
 	unsigned char *tomapped, *frommapped;
 	unsigned char *toptr, *fromptr;
+	unsigned char *srcs[1];
 
 	for (i = 0; i < bioto->bi_vcnt; ++i) {
 		bvto = bio_iovec_idx(bioto, i);
 		bvfrom = bio_iovec_idx(biofrom, i);
+
+		if (bvto->bv_len != PAGE_SIZE)
+			CHECK_BUG("buffer has not length PAGE_SIZE");
 
 		tomapped = (unsigned char *) kmap(bvto->bv_page);
 		frommapped = (unsigned char *) kmap(bvfrom->bv_page);
@@ -547,9 +552,16 @@ static void raidxor_xor_single(struct bio *bioto, struct bio *biofrom)
 		toptr = tomapped + bvto->bv_offset;
 		fromptr = frommapped + bvfrom->bv_offset;
 
+		printk(KERN_EMERG "combining buffer %p to buffer %p\n", fromptr, toptr);
+
+#if 0
 		for (j = 0; j < bvto->bv_len; ++j, ++toptr, ++fromptr) {
 			*toptr ^= *fromptr;
 		}
+#else
+		srcs[0] = fromptr;
+		xor_blocks(1, PAGE_SIZE, toptr, srcs);
+#endif
 
 		kunmap(bvfrom->bv_page);
 		kunmap(bvto->bv_page);
@@ -596,6 +608,8 @@ static int raidxor_xor_combine_decode(struct bio *bioto, raidxor_bio_t *rxbio,
 	unsigned long i;
 	struct bio *biofrom;
 
+	CHECK_FUN(raidxor_xor_combine_decode);
+
 	CHECK_ARGS3(bioto, rxbio, decoding);
 
 	/* copying first bio buffers */
@@ -621,7 +635,7 @@ static int raidxor_xor_combine_decode(struct bio *bioto, raidxor_bio_t *rxbio,
 			goto out;
 		}
 
-		printk(KERN_INFO "combining %p and %p\n", bioto, biofrom);
+		printk(KERN_INFO "combining %p to %p\n", biofrom, bioto);
 
 		/* combine the data */
 		raidxor_xor_single(bioto, biofrom);
@@ -650,32 +664,38 @@ static int raidxor_xor_combine_encode(struct bio *bioto, raidxor_bio_t *rxbio,
 	unsigned long i;
 	struct bio *biofrom;
 
+	CHECK_FUN(raidxor_xor_combine_encode);
+
 	CHECK_ARGS3(bioto, rxbio, encoding);
 
 	/* copying first bio buffers */
 	biofrom = raidxor_find_bio(rxbio, encoding->units[0]);
+
+	printk(KERN_EMERG "copying from bio %p to bio %p\n", biofrom, bioto);
 	raidxor_copy_bio(bioto, biofrom);
+
+	printk(KERN_EMERG "encoding has %u units", encoding->n_units);
 
 	/* then, xor the other buffers to the first one */
 	for (i = 1; i < encoding->n_units; ++i) {
-		printk(KERN_INFO "encoding unit %lu out of %d\n", i,
+		printk(KERN_EMERG "encoding unit %lu out of %d\n", i,
 		       encoding->n_units);
 		/* search for the right bio */
 		biofrom = raidxor_find_bio(rxbio, encoding->units[i]);
 
 		if (!biofrom) {
-			printk(KERN_DEBUG "raidxor: didn't find bio in"
+			printk(KERN_EMERG "raidxor: didn't find bio in"
 			       " raidxor_xor_combine_encode\n");
 			goto out;
 		}
 
 		if (raidxor_check_same_size_and_layout(bioto, biofrom)) {
-			printk(KERN_DEBUG "raidxor: bioto and biofrom"
+			printk(KERN_EMERG "raidxor: bioto and biofrom"
 			       " differ in size and/or layout\n");
 			goto out;
 		}
 
-		printk(KERN_INFO "combining %p and %p\n", bioto, biofrom);
+		printk(KERN_EMERG "combining %p to %p\n", biofrom, bioto);
 
 		/* combine the data */
 		raidxor_xor_single(bioto, biofrom);

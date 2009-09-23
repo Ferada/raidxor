@@ -214,6 +214,7 @@ struct decoding {
 	disk_info_t *units[0];
 };
 
+static void optimized_parity(char *dest, char *src, unsigned long len);
 static int raidxor_xor_combine_encode(struct bio *bioto,
 				      raidxor_bio_t *rxbio,
 				      encoding_t *encoding);

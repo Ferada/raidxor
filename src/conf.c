@@ -288,13 +288,14 @@ raidxor_store_decoding(mddev_t *mddev, const char *page, size_t len)
 				   sizeof(disk_info_t *) * length, GFP_NOIO);
 		if (!decoding)
 			goto out;
+		decoding->n_units = length;
 
 		for (i = 0; i < length; ++i) {
 			red = *page++;
 			--len;
 
 			if (red >= conf->n_units)
-				goto out_free_encoding;
+				goto out_free_decoding;
 
 			decoding->units[i] = &conf->units[red];
 		}
@@ -308,7 +309,7 @@ raidxor_store_decoding(mddev_t *mddev, const char *page, size_t len)
 	}
 
 	return oldlen;
-out_free_encoding:
+out_free_decoding:
 	kfree(decoding);
 out:
 	return -EINVAL;
@@ -367,6 +368,7 @@ raidxor_store_encoding(mddev_t *mddev, const char *page, size_t len)
 				   sizeof(disk_info_t *) * length, GFP_NOIO);
 		if (!encoding)
 			goto out_reset;
+		encoding->n_units = length;
 
 		for (i = 0; i < length; ++i) {
 			red = *page++;
