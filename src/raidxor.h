@@ -214,7 +214,7 @@ struct decoding {
 	disk_info_t *units[0];
 };
 
-static void optimized_parity(char *dest, char *src, unsigned long len);
+/* static void optimized_parity(char *dest, char *src, unsigned long len); */
 static int raidxor_xor_combine_encode(struct bio *bioto,
 				      raidxor_bio_t *rxbio,
 				      encoding_t *encoding);
@@ -329,7 +329,7 @@ struct raidxor_conf {
 	spin_unlock_irqrestore(&conf->device_lock, flags)
 #endif
 
-#if 1
+#ifdef DEBUG
 #define WITHLOCKCONF(conf,flags,block) \
 	unsigned int __check_bug = spin_is_locked(&conf->device_lock); \
 	if (__check_bug) CHECK_BUG("recursive lock"); \
@@ -431,6 +431,7 @@ struct raidxor_bio {
 #define CHECK_ALLOC_RET_NULL(var) \
 	CHECK_RET_NULL(var, CHECK_ALLOC_MESSAGE #var)
 
+#ifdef DEBUG
 #define CHECK_BUG(message) \
 	printk(CHECK_LEVEL "raidxor: BUG at %s:%i: %s\n", \
 	       __FILE__, __LINE__, message)
@@ -442,6 +443,12 @@ struct raidxor_bio {
 #define CHECK_STRIPE(conf) \
 	printk(CHECK_LEVEL "raidxor: %s:%i: &stripes[0] == %p, stripes[0] == %p\n", __FILE__, \
 	       __LINE__, &conf->stripes[0], conf->stripes[0]);
+#else
+#define CHECK_BUG(message)
+#define CHECK_LINE
+#define CHECK_FUN(fun)
+#define CHECK_STRIPE(conf)
+#endif
 
 #endif
 
