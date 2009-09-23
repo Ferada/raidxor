@@ -329,13 +329,19 @@ struct raidxor_conf {
 	spin_unlock_irqrestore(&conf->device_lock, flags)
 #endif
 
-#ifdef RAIDXOR_DEBUG
+#if 1
+//#ifdef RAIDXOR_DEBUG
 #define WITHLOCKCONF(conf,flags,block) \
+	{ \
 	unsigned int __check_bug = spin_is_locked(&conf->device_lock); \
-	if (__check_bug) CHECK_BUG("recursive lock"); \
-	LOCKCONF(conf, flags); \
+	if (__check_bug) { \
+		printk(KERN_EMERG "%s:%u:raidxor: recursive lock\n", __FILE__, __LINE__); \
+		dump_stack(); \
+	} \
+	else LOCKCONF(conf, flags); \
 	do block while(0); \
-	UNLOCKCONF(conf, flags);
+	if (!__check_bug) UNLOCKCONF(conf, flags); \
+	}
 #else
 #define WITHLOCKCONF(conf,flags,block) \
 	LOCKCONF(conf, flags); \

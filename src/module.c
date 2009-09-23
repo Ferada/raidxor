@@ -197,6 +197,7 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 	raidxor_bio_t *rxbio;
 	struct bio *bio;
 	unsigned int i, j, k, l, n_chunk_mult;
+	unsigned long flags = 0;
 	char buffer[BDEVNAME_SIZE];
 
  	CHECK_FUN(raidxor_cache_load_line);
@@ -208,7 +209,15 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 	CHECK_PLAIN(conf);
 
 	line = cache->lines[n];
-	CHECK_PLAIN(line->status == CACHE_LINE_LOAD_ME);
+
+	WITHLOCKCONF(conf, flags, {
+	if (line->status == CACHE_LINE_LOAD_ME)
+		line->status = CACHE_LINE_LOADING;
+	else {
+		UNLOCKCONF(conf, flags);
+		goto out;
+	}
+	});
 
 	stripe = raidxor_sector_to_stripe(conf, line->sector,
 					  &actual_sector);
@@ -292,11 +301,11 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 		}
 	}
 
+	WITHLOCKCONF(conf, flags, {
 	++cache->active_lines;
+	});
 
 	/* printk(KERN_EMERG "with %d bios\n", rxbio->n_bios); */
-
-	line->status = CACHE_LINE_LOADING;
 
 	return 0;
 out_free_bio: __attribute__((unused))
@@ -316,6 +325,7 @@ static int raidxor_cache_writeback_line(cache_t *cache, unsigned int n)
 	unsigned int i, j, k, l, n_chunk_mult;
 	struct bio *bio;
 	char buffer[BDEVNAME_SIZE];
+	unsigned long flags = 0;
 	raidxor_conf_t *conf = cache->conf;
 
  	CHECK_FUN(raidxor_cache_writeback_line);
@@ -324,7 +334,15 @@ static int raidxor_cache_writeback_line(cache_t *cache, unsigned int n)
 	CHECK_PLAIN(n < cache->n_lines);
 
 	line = cache->lines[n];
-	CHECK_PLAIN(line->status == CACHE_LINE_DIRTY);
+
+	WITHLOCKCONF(conf, flags, {
+	if (line->status == CACHE_LINE_DIRTY)
+		line->status = CACHE_LINE_WRITEBACK;
+	else {
+		UNLOCKCONF(conf, flags);
+		goto out;
+	}
+	});
 
 	stripe = raidxor_sector_to_stripe(conf, line->sector,
 					  &actual_sector);
@@ -399,9 +417,9 @@ static int raidxor_cache_writeback_line(cache_t *cache, unsigned int n)
 			goto out_free_bio;
 	}
 
+	WITHLOCKCONF(conf, flags, {
 	++cache->active_lines;
-
-	line->status = CACHE_LINE_WRITEBACK;
+	});
 
 	return 0;
 out_free_bio:
@@ -877,11 +895,11 @@ static void raidxor_finish_lines(cache_t *cache)
 			}
 			/* when the callback is invoked, the main thread is
 			   woken up and eventually revisits this entry  */
+			UNLOCKCONF(cache->conf, flags);
 			if (!raidxor_cache_writeback_line(cache, i)) {
-				UNLOCKCONF(cache->conf, flags);
 				raidxor_cache_commit_bio(cache, i);
-				LOCKCONF(cache->conf, flags);
 			}
+			LOCKCONF(cache->conf, flags);
 			break;
 		case CACHE_LINE_LOAD_ME:
 		case CACHE_LINE_LOADING:
@@ -977,9 +995,10 @@ static int raidxor_handle_line(cache_t *cache, unsigned int n_line)
 
 	switch (line->status) {
 	case CACHE_LINE_LOAD_ME:
+		UNLOCKCONF(cache->conf, flags);
 		commit = !raidxor_cache_load_line(cache, n_line);
 		done = 1;
-		break;
+		goto break_unlocked;
 	case CACHE_LINE_FAULTY:
 		UNLOCKCONF(cache->conf, flags);
 		raidxor_cache_recover(cache, n_line);
