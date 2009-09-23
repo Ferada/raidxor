@@ -49,18 +49,18 @@ static int raidxor_cache_make_ready(cache_t *cache, unsigned int n_line)
 	line = cache->lines[n_line];
 	CHECK_PLAIN_RET_VAL(line);
 
-	/* printk(KERN_EMERG "line status was %s\n", raidxor_cache_line_status(line)); */
-	/* printk(KERN_EMERG "line at %p\n", line); */
+	/* printk(KERN_EMERG "line status was %s\n", raidxor_cache_line_status(line));
+	printk(KERN_EMERG "line at %p\n", line); */
 
 	if (line->status == CACHE_LINE_READY) return 0;
 	CHECK_PLAIN_RET_VAL(line->status == CACHE_LINE_CLEAN || 
 			    line->status == CACHE_LINE_UPTODATE);
 
-	/* printk(KERN_EMERG "cache->n_buffers == %u, cache->n_red_buffers == %u\n", */
-	/*       cache->n_buffers, cache->n_red_buffers); */
+	/* printk(KERN_EMERG "cache->n_buffers == %u, cache->n_red_buffers == %u\n",
+	       cache->n_buffers, cache->n_red_buffers); */
 
 	if (line->status == CACHE_LINE_CLEAN)
-		for (i = 0; i < cache->n_buffers + cache->n_red_buffers; ++i) {
+		for (i = 0; i < (cache->n_buffers + cache->n_red_buffers) * cache->n_chunk_mult; ++i) {
 			/* printk(KERN_EMERG "line->buffers[%u] at %p, before %p\n", i, &line->buffers[i], line->buffers[i]); */
 			if (!(line->buffers[i] = alloc_page(GFP_NOIO))) {
 				printk(KERN_EMERG "page allocation failed for line %u\n", n_line);
@@ -69,7 +69,6 @@ static int raidxor_cache_make_ready(cache_t *cache, unsigned int n_line)
 			/* printk(KERN_EMERG "line->buffers[%u] is now %p\n", i, line->buffers[i]); */
 		}
 	line->status = CACHE_LINE_READY;
-
 
 	return 0;
 out_free_pages:
@@ -93,7 +92,6 @@ static int raidxor_cache_make_load_me(cache_t *cache, unsigned int line,
 
 	cache->lines[line]->status = CACHE_LINE_LOAD_ME;
 	cache->lines[line]->sector = sector;
-
 
 	return 0;
 }
@@ -199,6 +197,7 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 	raidxor_bio_t *rxbio;
 	struct bio *bio;
 	unsigned int i, j, k, l, n_chunk_mult;
+	char buffer[BDEVNAME_SIZE];
 
  	CHECK_FUN(raidxor_cache_load_line);
 
@@ -257,6 +256,8 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 
 		bio->bi_size = n_chunk_mult * PAGE_SIZE;
 
+		/* printk(KERN_EMERG "load %lu bytes at physical sector %lu from device %s\n", bio->bi_size, bio->bi_sector, bdevname(bio->bi_bdev, buffer)); */
+
 		/* printk(KERN_EMERG "bio->bi_size = %u, bio = %p\n", bio->bi_size, bio); */
 
 		/* printk(KERN_EMERG "cache->n_buffers = %d, n_red_buffers = %d\n",
@@ -265,7 +266,7 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 		bio->bi_vcnt = n_chunk_mult;
 		for (j = 0; j < n_chunk_mult; ++j) {
 			if (stripe->units[i]->redundant) {
-				k = cache->n_buffers + l * n_chunk_mult + j;
+				k = (cache->n_buffers + l) * n_chunk_mult + j;
 				/* printk(KERN_EMERG "[%d], red k = %d\n", j, k); */
 			}
 			else {
@@ -314,6 +315,7 @@ static int raidxor_cache_writeback_line(cache_t *cache, unsigned int n)
 	raidxor_bio_t *rxbio;
 	unsigned int i, j, k, l, n_chunk_mult;
 	struct bio *bio;
+	char buffer[BDEVNAME_SIZE];
 	raidxor_conf_t *conf = cache->conf;
 
  	CHECK_FUN(raidxor_cache_writeback_line);
@@ -360,11 +362,13 @@ static int raidxor_cache_writeback_line(cache_t *cache, unsigned int n)
 
 		bio->bi_size = n_chunk_mult * PAGE_SIZE;
 
+		/* printk(KERN_EMERG "write %u bytes at physical sector %llu to device %s\n", bio->bi_size, bio->bi_sector, bdevname(bio->bi_bdev, buffer)); */
+
 		bio->bi_vcnt = n_chunk_mult;
 		/* assign pages */
 		for (j = 0; j < n_chunk_mult; ++j) {
 			if (stripe->units[i]->redundant) {
-				k = cache->n_buffers + l * n_chunk_mult + j;
+				k = (cache->n_buffers + l) * n_chunk_mult + j;
 				/* printk(KERN_EMERG "[%d], red k = %d\n", j, k); */
 			}
 			else {
@@ -541,8 +545,10 @@ static void raidxor_xor_single(struct bio *bioto, struct bio *biofrom)
 		bvto = bio_iovec_idx(bioto, i);
 		bvfrom = bio_iovec_idx(biofrom, i);
 
+#ifdef RAIDXOR_DEBUG
 		if (bvto->bv_len != PAGE_SIZE)
 			CHECK_BUG("buffer has not length PAGE_SIZE");
+#endif
 
 		tomapped = (unsigned char *) kmap(bvto->bv_page);
 		frommapped = (unsigned char *) kmap(bvfrom->bv_page);
@@ -599,7 +605,8 @@ static int raidxor_xor_combine_decode(struct bio *bioto, raidxor_bio_t *rxbio,
 #define CHECK_JUMP_LABEL out
 	/* since we have control over bioto and rxbio, every bio has size
 	   M * CHUNK_SIZE with CHUNK_SIZE = N * PAGE_SIZE */
-	unsigned int i, err;
+	unsigned int i;
+	unsigned int err __attribute__((unused));
 	struct bio *biofrom;
 
 	CHECK_FUN(raidxor_xor_combine_decode);
@@ -655,7 +662,8 @@ static int raidxor_xor_combine_encode(struct bio *bioto, raidxor_bio_t *rxbio,
 #define CHECK_JUMP_LABEL out
 	/* since we have control over bioto and rxbio, every bio has size
 	   M * CHUNK_SIZE with CHUNK_SIZE = N * PAGE_SIZE */
-	unsigned int i, err;
+	unsigned int i;
+	unsigned int err __attribute__((unused));
 	struct bio *biofrom;
 
 	CHECK_FUN(raidxor_xor_combine_encode);
@@ -1305,11 +1313,12 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 #undef CHECK_JUMP_LABEL
 #define CHECK_JUMP_LABEL out_unlock
 
-	/* printk(KERN_EMERG "virtual sector %llu, length %u\n",
-	       (unsigned long long) bio->bi_sector, bio->bi_size); */
-
 	if (test_bit(CONF_STOPPING, &conf->flags))
 		goto out_unlock;
+
+	/*printk(KERN_EMERG "virtual sector %llu, length %u, %s",
+	       (unsigned long long) bio->bi_sector, bio->bi_size,
+	       (bio_data_dir(bio) == WRITE) ? "write" : "read");*/
 
 	CHECK_PLAIN(!raidxor_check_bio_size_and_layout(conf, bio));
 
@@ -1325,8 +1334,8 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 	/* set as offset to new base */
 	bio->bi_sector = bio->bi_sector - aligned_sector;
 
-	/* printk(KERN_EMERG "aligned_sector %llu, bio->bi_sector %llu\n",
-	       aligned_sector, bio->bi_sector); */
+	/*printk(KERN_EMERG " aligned_sector %llu, bio->bi_sector %llu\n",
+	       aligned_sector, bio->bi_sector);*/
 
 	/* checked assumption is: aligned_sector is aligned to
 	   strip/cache line, bio->bi_sector is the offset inside this strip

@@ -228,7 +228,7 @@ static void raidxor_cache_drop_line(cache_t *cache, unsigned int line)
 	CHECK_ARG_RET(cache);
 	CHECK_PLAIN_RET(line < cache->n_lines);
 
-	for (i = 0; i < cache->n_buffers + cache->n_red_buffers; ++i) {
+	for (i = 0; i < (cache->n_buffers + cache->n_red_buffers) * cache->n_chunk_mult; ++i) {
 		safe_put_page(cache->lines[line]->buffers[i]);
 		cache->lines[line]->buffers[i] = NULL;
 	}
@@ -254,6 +254,8 @@ static cache_t * raidxor_alloc_cache(unsigned int n_lines,
 	CHECK_PLAIN_RET_NULL(n_buffers != 0);
 	CHECK_PLAIN_RET_NULL(n_chunk_mult != 0);
 
+	printk(KERN_EMERG "alloc_cache allocating (%u + %u) * %u = %u buffers\n", n_buffers, n_red_buffers, n_chunk_mult, (n_buffers + n_red_buffers) * n_chunk_mult);
+
 	cache = kzalloc(sizeof(cache_t) + sizeof(cache_line_t *) * n_lines,
 			GFP_NOIO);
 	CHECK_ALLOC_RET_NULL(cache);
@@ -261,7 +263,8 @@ static cache_t * raidxor_alloc_cache(unsigned int n_lines,
 	for (i = 0; i < n_lines; ++i) {
 		cache->lines[i] = kzalloc(sizeof(cache_line_t) +
 					  sizeof(struct page *) *
-					  (n_buffers + n_red_buffers),
+					  (n_buffers + n_red_buffers) *
+					  n_chunk_mult,
 					  GFP_NOIO);
 		if (!cache->lines[i])
 			goto out_free_lines;
