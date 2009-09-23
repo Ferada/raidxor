@@ -939,7 +939,7 @@ static void raidxor_handle_requests(cache_t *cache, unsigned int n_line)
 {
 	cache_line_t *line;
 	struct bio *bio;
-	unsigned long flags;
+	unsigned long flags = 0;
 
 	CHECK_FUN(raidxor_handle_requests);
 
@@ -984,7 +984,7 @@ static int raidxor_handle_line(cache_t *cache, unsigned int n_line)
 #undef CHECK_RETURN_VALUE
 #define CHECK_RETURN_VALUE 0
 	cache_line_t *line;
-	unsigned long flags;
+	unsigned long flags = 0;
 	unsigned int commit = 0, done = 0;
 
 	/* CHECK_FUN(raidxor_handle_line); */
