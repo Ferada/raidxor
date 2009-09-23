@@ -483,7 +483,7 @@ static void raidxor_end_load_line(struct bio *bio, int error)
 		else  {
 			line->status = CACHE_LINE_UPTODATE;
 			line->rxbio = NULL;
-			kfree(rxbio);
+			raidxor_free_bio(rxbio);
 		}
 		--cache->active_lines;
 		wake = 1;
@@ -536,7 +536,7 @@ static void raidxor_end_writeback_line(struct bio *bio, int error)
 		line->status = CACHE_LINE_UPTODATE;
 
 		line->rxbio = NULL;
-		kfree(rxbio);
+		raidxor_free_bio(rxbio);
 
 		--cache->active_lines;
 		wake = 1;
@@ -756,23 +756,30 @@ static void raidxor_cache_recover(cache_t *cache, unsigned int n_line)
 
 	WITHLOCKCONF(conf, flags, {
 	if (!raidxor_valid_decoding(cache, n_line))
-		goto out;
+		goto out_free_rxbio;
 
 	line->status = CACHE_LINE_RECOVERY;
+	});
 
 	/* decoding using direct style */
 	for (i = 0; i < rxbio->n_bios; ++i) {
 		if (test_bit(Faulty, &stripe->units[i]->rdev->flags) &&
 		    raidxor_xor_combine_decode(rxbio->bios[i], rxbio,
 					       stripe->units[i]->decoding))
-			goto out;
+			goto out_free_rxbio;
 	}
 	/* printk(KERN_EMERG "decoded\n"); */
 
+	WITHLOCKCONF(conf, flags, {
+	line->rxbio = NULL;
 	line->status = CACHE_LINE_UPTODATE;
 	});
+
+	raidxor_free_bio(rxbio);
+
 	return;
-out:
+out_free_rxbio:
+	raidxor_free_bio(rxbio);
 	/* drop this line if an error occurs or we can't recover */
 	raidxor_cache_abort_line(cache, n_line);
 	UNLOCKCONF(conf, flags);

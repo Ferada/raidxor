@@ -168,20 +168,42 @@ static unsigned int raidxor_unit_to_index(raidxor_conf_t *conf,
 	return 0;
 }
 
+static void clear_bio(struct bio *bio)
+{
+	unsigned int i;
+
+	CHECK_ARG_RET(bio);
+
+	for (i = 0; i < bio->bi_vcnt; ++i)
+		bio->bi_io_vec[i].bv_page = NULL;
+}
+
 /**
  * free_bio() - puts all pages in a bio and the bio itself
  */
 static void free_bio(struct bio *bio)
 {
-	unsigned long i;
+	unsigned int i;
 
 	CHECK_ARG_RET(bio);
 
-	for (i = 0; i < bio->bi_vcnt; ++i) {
+	for (i = 0; i < bio->bi_vcnt; ++i)
 		safe_put_page(bio->bi_io_vec[i].bv_page);
-		bio->bi_io_vec[i].bv_page = NULL;
-	}
 	bio_put(bio);
+}
+
+/**
+ * clear_bios() - 
+ */
+static void clear_bios(raidxor_bio_t *rxbio)
+{
+	unsigned int i;
+
+	CHECK_ARG_RET(rxbio);
+
+	for (i = 0; i < rxbio->n_bios; ++i)
+		if (rxbio->bios[i])
+			clear_bio(rxbio->bios[i]);
 }
 
 /**
@@ -189,7 +211,7 @@ static void free_bio(struct bio *bio)
  */
 static void free_bios(raidxor_bio_t *rxbio)
 {
-	unsigned long i;
+	unsigned int i;
 
 	CHECK_ARG_RET(rxbio);
 
@@ -217,6 +239,7 @@ static raidxor_bio_t * raidxor_alloc_bio(unsigned int nbios)
 
 static void raidxor_free_bio(raidxor_bio_t *rxbio)
 {
+	clear_bios(rxbio);
 	free_bios(rxbio);
 	kfree(rxbio);
 }
