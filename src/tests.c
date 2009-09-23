@@ -226,15 +226,6 @@ static int raidxor_test_case_sizeandlayout(void)
 		return 1;
 	}
 
-	vs1[1].bv_len = 42;
-	bio2.bi_size = 1024;
-
-	if (!(result = raidxor_check_same_size_and_layout(&bio1, &bio2))) {
-		printk(KERN_EMERG "raidxor: test case sizeandlayout/3 failed: %d\n",
-		       result);
-		return 1;
-	}
-
 	return 0;
 }
 

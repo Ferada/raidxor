@@ -329,7 +329,7 @@ struct raidxor_conf {
 	spin_unlock_irqrestore(&conf->device_lock, flags)
 #endif
 
-#ifdef DEBUG
+#ifdef RAIDXOR_DEBUG
 #define WITHLOCKCONF(conf,flags,block) \
 	unsigned int __check_bug = spin_is_locked(&conf->device_lock); \
 	if (__check_bug) CHECK_BUG("recursive lock"); \
@@ -373,7 +373,7 @@ struct raidxor_bio {
 
 #define CHECK_LEVEL KERN_EMERG
 
-#ifdef DEBUG
+#ifdef RAIDXOR_DEBUG
 #define CHECK_HELPER(test,block,message) \
 	if (!(test)) { \
 		printk(CHECK_LEVEL "%s:%u:raidxor: check failed: %s\n", \
@@ -431,7 +431,7 @@ struct raidxor_bio {
 #define CHECK_ALLOC_RET_NULL(var) \
 	CHECK_RET_NULL(var, CHECK_ALLOC_MESSAGE #var)
 
-#ifdef DEBUG
+#ifdef RAIDXOR_DEBUG
 #define CHECK_BUG(message) \
 	printk(CHECK_LEVEL "raidxor: BUG at %s:%i: %s\n", \
 	       __FILE__, __LINE__, message)
@@ -440,9 +440,6 @@ struct raidxor_bio {
 	printk(CHECK_LEVEL "raidxor: %s:%i\n", __FILE__, __LINE__)
 #define CHECK_FUN(fun) \
 	printk(CHECK_LEVEL "raidxor: %s:%i: %s\n", __FILE__, __LINE__, #fun)
-#define CHECK_STRIPE(conf) \
-	printk(CHECK_LEVEL "raidxor: %s:%i: &stripes[0] == %p, stripes[0] == %p\n", __FILE__, \
-	       __LINE__, &conf->stripes[0], conf->stripes[0]);
 #else
 #define CHECK_BUG(message)
 #define CHECK_LINE

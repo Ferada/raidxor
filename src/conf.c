@@ -125,7 +125,8 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 	/* allocate the cache with a default of 10 lines;
 	   TODO: could be a driver option, or allow for shrinking/growing ... */
 	/* one chunk is CHUNK_SIZE / PAGE_SIZE pages long, eqv. >> PAGE_SHIFT */
-	conf->cache = raidxor_alloc_cache(10, stripes[0]->n_data_units,
+	conf->cache = raidxor_alloc_cache(number_of_cache_lines,
+					  stripes[0]->n_data_units,
 					  stripes[0]->n_units -
 					  stripes[0]->n_data_units,
 					  conf->chunk_size >> PAGE_SHIFT);
@@ -160,10 +161,7 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 	conf->stripes = stripes;
 	conf->configured = 1;
 
-	CHECK_STRIPE(conf);
-
 	return;
-
 out_free_stripes:
 	for (i = 0; i < conf->n_stripes; ++i)
 		kfree(stripes[i]);

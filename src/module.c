@@ -10,11 +10,9 @@
 /* for xor_blocks */
 #include <linux/raid/xor.h>
 
-//#define DEBUG
-//#define RAIDXOR_RUN_TESTCASES
-
 #include "raidxor.h"
 
+#include "params.c"
 #include "utils.c"
 #include "conf.c"
 
@@ -53,30 +51,25 @@ static int raidxor_cache_make_ready(cache_t *cache, unsigned int n_line)
 
 	/* printk(KERN_EMERG "line status was %s\n", raidxor_cache_line_status(line)); */
 	/* printk(KERN_EMERG "line at %p\n", line); */
-	CHECK_STRIPE(cache->conf);
 
 	if (line->status == CACHE_LINE_READY) return 0;
 	CHECK_PLAIN_RET_VAL(line->status == CACHE_LINE_CLEAN || 
 			    line->status == CACHE_LINE_UPTODATE);
-	CHECK_STRIPE(cache->conf);
 
 	/* printk(KERN_EMERG "cache->n_buffers == %u, cache->n_red_buffers == %u\n", */
 	/*       cache->n_buffers, cache->n_red_buffers); */
 
 	if (line->status == CACHE_LINE_CLEAN)
 		for (i = 0; i < cache->n_buffers + cache->n_red_buffers; ++i) {
-			CHECK_STRIPE(cache->conf);
 			/* printk(KERN_EMERG "line->buffers[%u] at %p, before %p\n", i, &line->buffers[i], line->buffers[i]); */
 			if (!(line->buffers[i] = alloc_page(GFP_NOIO))) {
 				printk(KERN_EMERG "page allocation failed for line %u\n", n_line);
 				goto out_free_pages;
 			}
 			/* printk(KERN_EMERG "line->buffers[%u] is now %p\n", i, line->buffers[i]); */
-			CHECK_STRIPE(cache->conf);
 		}
 	line->status = CACHE_LINE_READY;
 
-	CHECK_STRIPE(cache->conf);
 
 	return 0;
 out_free_pages:
@@ -101,7 +94,6 @@ static int raidxor_cache_make_load_me(cache_t *cache, unsigned int line,
 	cache->lines[line]->status = CACHE_LINE_LOAD_ME;
 	cache->lines[line]->sector = sector;
 
-	CHECK_STRIPE(cache->conf);
 
 	return 0;
 }
@@ -265,6 +257,8 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 
 		bio->bi_size = n_chunk_mult * PAGE_SIZE;
 
+		/* printk(KERN_EMERG "bio->bi_size = %u, bio = %p\n", bio->bi_size, bio); */
+
 		/* printk(KERN_EMERG "cache->n_buffers = %d, n_red_buffers = %d\n",
 		       cache->n_buffers, cache->n_red_buffers); */
 		/* assign pages */
@@ -294,7 +288,6 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 			--rxbio->remaining;
 			if (!stripe->units[i]->redundant)
 				rxbio->faulty = 1;
-			continue;
 		}
 	}
 
@@ -392,7 +385,6 @@ static int raidxor_cache_writeback_line(cache_t *cache, unsigned int n)
 			--rxbio->remaining;
 			if (!stripe->units[i]->redundant)
 				rxbio->faulty = 1;
-			continue;
 		}
 	}
 	
@@ -584,13 +576,9 @@ static int raidxor_check_same_size_and_layout(struct bio *x, struct bio *y)
 {
 	unsigned long i;
 
-	/* two bios are the same, if they are of the same size, */
-	if (x->bi_size != y->bi_size)
-		return 1;
-
 	/* have the same number of bio_vecs, */
 	if (x->bi_vcnt != y->bi_vcnt)
-		return 2;
+		return 1;
 
 	/* and those are of the same length, pairwise */
 	for (i = 0; i < x->bi_vcnt; ++i) {
@@ -598,7 +586,7 @@ static int raidxor_check_same_size_and_layout(struct bio *x, struct bio *y)
 		/* printk(KERN_INFO "comparing %d and %d\n",
 		       x->bi_io_vec[i].bv_len, y->bi_io_vec[i].bv_len); */
 		if (x->bi_io_vec[i].bv_len != y->bi_io_vec[i].bv_len)
-			return 3;
+			return 2;
 	}
 
 	return 0;
@@ -611,7 +599,7 @@ static int raidxor_xor_combine_decode(struct bio *bioto, raidxor_bio_t *rxbio,
 #define CHECK_JUMP_LABEL out
 	/* since we have control over bioto and rxbio, every bio has size
 	   M * CHUNK_SIZE with CHUNK_SIZE = N * PAGE_SIZE */
-	unsigned long i;
+	unsigned int i, err;
 	struct bio *biofrom;
 
 	CHECK_FUN(raidxor_xor_combine_decode);
@@ -624,24 +612,24 @@ static int raidxor_xor_combine_decode(struct bio *bioto, raidxor_bio_t *rxbio,
 
 	/* then, xor the other buffers to the first one */
 	for (i = 1; i < decoding->n_units; ++i) {
-		/* printk(KERN_EMERG "encoding unit %lu out of %d\n", i,
+		/* printk(KERN_EMERG "decoding unit %u out of %d\n", i,
 		       decoding->n_units); */
 		/* search for the right bio */
 		biofrom = raidxor_find_bio(rxbio, decoding->units[i]);
 
 		if (!biofrom) {
-			/* printk(KERN_EMERG "raidxor: didn't find bio in"
-			       " raidxor_xor_combine_decode\n"); */
+			printk(KERN_EMERG "raidxor: didn't find bio in"
+			       " raidxor_xor_combine_decode\n");
 			goto out;
 		}
 
-		if (raidxor_check_same_size_and_layout(bioto, biofrom)) {
-			/* printk(KERN_EMERG "raidxor: bioto and biofrom"
-			       " differ in size and/or layout\n"); */
+#ifdef RAIDXOR_DEBUG
+		if ((err = raidxor_check_same_size_and_layout(bioto, biofrom))) {
+			printk(KERN_EMERG "raidxor: bioto and biofrom"
+			       " differ in size and/or layout: %u\n", err);
 			goto out;
 		}
-
-		/* printk(KERN_EMERG "combining %p to %p\n", biofrom, bioto); */
+#endif
 
 		/* combine the data */
 		raidxor_xor_single(bioto, biofrom);
@@ -667,7 +655,7 @@ static int raidxor_xor_combine_encode(struct bio *bioto, raidxor_bio_t *rxbio,
 #define CHECK_JUMP_LABEL out
 	/* since we have control over bioto and rxbio, every bio has size
 	   M * CHUNK_SIZE with CHUNK_SIZE = N * PAGE_SIZE */
-	unsigned long i;
+	unsigned int i, err;
 	struct bio *biofrom;
 
 	CHECK_FUN(raidxor_xor_combine_encode);
@@ -680,24 +668,24 @@ static int raidxor_xor_combine_encode(struct bio *bioto, raidxor_bio_t *rxbio,
 
 	/* then, xor the other buffers to the first one */
 	for (i = 1; i < encoding->n_units; ++i) {
-		/* printk(KERN_EMERG "encoding unit %lu out of %d\n", i,
+		/* printk(KERN_EMERG "encoding unit %u out of %d\n", i,
 		       encoding->n_units); */
 		/* search for the right bio */
 		biofrom = raidxor_find_bio(rxbio, encoding->units[i]);
 
 		if (!biofrom) {
-			/* printk(KERN_EMERG "raidxor: didn't find bio in"
-			       " raidxor_xor_combine_encode\n"); */
+			printk(KERN_EMERG "raidxor: didn't find bio in"
+			       " raidxor_xor_combine_encode\n");
 			goto out;
 		}
 
-		if (raidxor_check_same_size_and_layout(bioto, biofrom)) {
-			/* printk(KERN_EMERG "raidxor: bioto and biofrom"
-			       " differ in size and/or layout\n"); */
+#ifdef RAIDXOR_DEBUG
+		if ((err = raidxor_check_same_size_and_layout(bioto, biofrom))) {
+			printk(KERN_EMERG "raidxor: bioto and biofrom"
+			       " differ in size and/or layout: %u\n", err);
 			goto out;
 		}
-
-		/* printk(KERN_EMERG "combining %p to %p\n", biofrom, bioto); */
+#endif
 
 		/* combine the data */
 		raidxor_xor_single(bioto, biofrom);
@@ -753,6 +741,7 @@ static void raidxor_cache_recover(cache_t *cache, unsigned int n_line)
 					       stripe->units[i]->decoding))
 			goto out;
 	}
+	/* printk(KERN_EMERG "decoded\n"); */
 
 	line->status = CACHE_LINE_UPTODATE;
 	});
@@ -790,7 +779,7 @@ static void raidxor_invalidate_decoding(raidxor_conf_t *conf,
 			       raidxor_unit_to_index(conf, stripe->units[i])); */
 		}
 
-	printk(KERN_EMERG "raidxor: raid %s needs new decoding information\n",
+	printk(KERN_CRIT "raidxor: raid %s needs new decoding information\n",
 	       mdname(conf->mddev));
 }
 
@@ -812,7 +801,7 @@ static void raidxor_error(mddev_t *mddev, mdk_rdev_t *rdev)
 		set_bit(STRIPE_FAULTY, &unit->stripe->flags);
 		set_bit(CONF_FAULTY, &conf->flags);
 		raidxor_invalidate_decoding(conf, unit);
-		printk(KERN_ALERT "raidxor: disk failure on %s\n",
+		printk(KERN_CRIT "raidxor: disk failure on %s\n",
 		       bdevname(rdev->bdev, buffer));
 	}
 	});
@@ -844,39 +833,40 @@ static void raidxor_finish_lines(cache_t *cache)
 		line = cache->lines[i];
 		switch (line->status) {
 		case CACHE_LINE_READY:
-#ifdef DEBUG
+#ifdef RAIDXOR_DEBUG
 			if (line->waiting)
 				printk(KERN_EMERG "line %u with state READY has waiting in finish_lines\n", i);
 			else
 				printk(KERN_EMERG "line %u with state READY has no waiting in finish_lines\n", i);
 #endif
 			/* can only happen if we stop the raid */
+			break;
 		case CACHE_LINE_CLEAN:
-#ifdef DEBUG
 			if (line->waiting) {
+#ifdef RAIDXOR_DEBUG
 				printk(KERN_EMERG "line %u with STATE CLEAN has waiting in finish_lines\n", i);
+#endif
 				break;
 			}
-#endif
 			++freed;
 			break;
 		case CACHE_LINE_UPTODATE:
-#ifdef DEBUG
 			if (line->waiting) {
+#ifdef RAIDXOR_DEBUG
 				printk(KERN_EMERG "line %u with STATE UPTODATE has waiting in finish_lines\n", i);
+#endif
 				break;
 			}
-#endif
 			raidxor_cache_make_ready(cache, i);
 			++freed;
 			break;
 		case CACHE_LINE_DIRTY:
-#ifdef DEBUG
 			if (line->waiting) {
+#ifdef RAIDXOR_DEBUG
 				printk(KERN_EMERG "line %u with STATE DIRTY has waiting in finish_lines\n", i);
+#endif
 				break;
 			}
-#endif
 			/* when the callback is invoked, the main thread is
 			   woken up and eventually revisits this entry  */
 			if (!raidxor_cache_writeback_line(cache, i)) {
@@ -1029,7 +1019,9 @@ static void raidxord(mddev_t *mddev)
 	cache_t *cache;
 	unsigned int handled = 0;
 	unsigned int done = 0;
+#ifdef RAIDXOR_DEBUG
 	unsigned long flags = 0;
+#endif
 
 	CHECK_ARG_RET(mddev);
 
@@ -1040,7 +1032,7 @@ static void raidxord(mddev_t *mddev)
 	CHECK_PLAIN_RET(cache);
 
 	/* someone poked us.  see what we can do */
-	/* printk(KERN_EMERG "raidxor: raidxord active\n"); */
+	pr_debug("raidxor: raidxord active\n");
 
 	for (; !done;) {
 		/* go through all cache lines, see if any waiting requests
@@ -1064,12 +1056,12 @@ static void raidxord(mddev_t *mddev)
 		}
 	}
 
-#ifdef DEBUG
+#ifdef RAIDXOR_DEBUG
 	WITHLOCKCONF(conf, flags, {
 	raidxor_cache_print_status(cache);
 	});
 #endif
-	/* printk(KERN_EMERG "raidxor: thread inactive, %u lines handled\n", handled); */
+	pr_debug("raidxor: thread inactive, %u lines handled\n", handled);
 }
 
 static void raidxor_unplug(struct request_queue *q)
@@ -1315,7 +1307,6 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 
 	/* printk(KERN_EMERG "virtual sector %llu, length %u\n",
 	       (unsigned long long) bio->bi_sector, bio->bi_size); */
-	CHECK_STRIPE(conf);
 
 	if (test_bit(CONF_STOPPING, &conf->flags))
 		goto out_unlock;
@@ -1325,8 +1316,6 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 	stripe = raidxor_sector_to_stripe(conf, bio->bi_sector, NULL);
 	CHECK_PLAIN(stripe);
 	strip_sectors = (conf->chunk_size >> 9) * stripe->n_data_units;
-
-	CHECK_STRIPE(conf);
 
 	aligned_sector = bio->bi_sector;
 
@@ -1338,8 +1327,6 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 
 	/* printk(KERN_EMERG "aligned_sector %llu, bio->bi_sector %llu\n",
 	       aligned_sector, bio->bi_sector); */
-
-	CHECK_STRIPE(conf);
 
 	/* checked assumption is: aligned_sector is aligned to
 	   strip/cache line, bio->bi_sector is the offset inside this strip
@@ -1386,8 +1373,6 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 	if (!raidxor_cache_find_line(cache, aligned_sector, &line))
 		goto out_unlock;
 
-	CHECK_STRIPE(conf);
-
 	/* printk(KERN_EMERG "found available line %u\n", line); */
 
 	if (cache->lines[line]->status == CACHE_LINE_CLEAN ||
@@ -1403,14 +1388,9 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 		}
 	}
 
-	CHECK_STRIPE(conf);
-
 	/* TODO: which states are unacceptable? */
 	/* pack the request somewhere in the cache */
 	raidxor_cache_add_request(cache, line, bio);
-
-	CHECK_STRIPE(conf);
-
 	});
 /*	spin_unlock_irq(&conf->device_lock); */
 
