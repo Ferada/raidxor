@@ -1,6 +1,6 @@
 #!/bin/sh
 
-LOOP=/dev/loop10
+LOOP=/dev/loop20
 MOUNT=/mnt/copy
 
 mount -t ext3 $LOOP $MOUNT
