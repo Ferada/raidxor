@@ -955,20 +955,21 @@ static void raidxor_handle_requests(cache_t *cache, unsigned int n_line)
 
 	/* requests are added at back, so take from front and handle */
 	while ((bio = raidxor_cache_remove_request(cache, n_line))) {
+		UNLOCKCONF(cache->conf, flags);
+
 		if (bio_data_dir(bio) == WRITE)
 			raidxor_copy_bio_to_cache(cache, n_line, bio);
 		else raidxor_copy_bio_from_cache(cache, n_line, bio);
 
+		bio_endio(bio, 0);
+
+		LOCKCONF(cache->conf, flags);
 		/* mark dirty */
 		if (bio_data_dir(bio) == WRITE &&
 		    line->status == CACHE_LINE_UPTODATE)
 		{
 			line->status = CACHE_LINE_DIRTY;
 		}
-
-		UNLOCKCONF(cache->conf, flags);
-		bio_endio(bio, 0);
-		LOCKCONF(cache->conf, flags);
 	}
 	});
 }

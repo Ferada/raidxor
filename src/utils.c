@@ -423,13 +423,13 @@ static void raidxor_copy_bio_to_cache(cache_t *cache, unsigned int n_line,
 
 	bio_for_each_segment(bvl, bio, i) {
 		bio_mapped = __bio_kmap_atomic(bio, i, KM_USER0);
-		page_mapped = kmap_atomic(line->buffers[j], KM_USER0);
+		page_mapped = kmap(line->buffers[j]);
 
 		/* printk(KERN_EMERG "copying %lu bytes for index %d, buffer %d\n", PAGE_SIZE, i, j); */
 
-		memcpy(page_mapped, bio_mapped, PAGE_SIZE);
+		memmove(page_mapped, bio_mapped, PAGE_SIZE);
 
-		kunmap_atomic(page_mapped, KM_USER0);
+		kunmap(line->buffers[j]);
 		__bio_kunmap_atomic(bio_mapped, KM_USER0);
 		++j;
 	}
@@ -471,13 +471,13 @@ static void raidxor_copy_bio_from_cache(cache_t *cache, unsigned int n_line,
 
 	bio_for_each_segment(bvl, bio, i) {
 		bio_mapped = __bio_kmap_atomic(bio, i, KM_USER0);
-		page_mapped = kmap_atomic(line->buffers[j], KM_USER0);
+		page_mapped = kmap(line->buffers[j]);
 
 		/* printk(KERN_EMERG "copying %lu bytes for index %d, buffer %d\n", PAGE_SIZE, i, j); */
 
-		memcpy(bio_mapped, page_mapped, PAGE_SIZE);
+		memmove(bio_mapped, page_mapped, PAGE_SIZE);
 
-		kunmap_atomic(page_mapped, KM_USER0);
+		kunmap(line->buffers[j]);
 		__bio_kunmap_atomic(bio_mapped, KM_USER0);
 		++j;
 	}
