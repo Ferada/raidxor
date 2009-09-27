@@ -580,7 +580,7 @@ static void raidxor_xor_single(struct bio *bioto, struct bio *biofrom)
 
 		xor_blocks(nsrcs, PAGE_SIZE, toptr, srcs);
 
-		for (i = j; i < bio->bi_vcnt && i < (j + 5); ++i) {
+		for (i = j; i < bioto->bi_vcnt && i < (j + 5); ++i) {
 			bvto = bio_iovec_idx(bioto, i);
 			bvfrom = bio_iovec_idx(biofrom, i);
 
