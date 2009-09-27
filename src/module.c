@@ -553,40 +553,42 @@ static void raidxor_end_writeback_line(struct bio *bio, int error)
  */
 static void raidxor_xor_single(struct bio *bioto, struct bio *biofrom)
 {
-	unsigned int i;
+	unsigned int i, j, nsrcs;
 	struct bio_vec *bvto, *bvfrom;
 	unsigned char *tomapped, *frommapped;
 	unsigned char *toptr, *fromptr;
-	void *srcs[1];
+	void *srcs[5];
 
-	for (i = 0; i < bioto->bi_vcnt; ++i) {
-		bvto = bio_iovec_idx(bioto, i);
-		bvfrom = bio_iovec_idx(biofrom, i);
+	j = 0;
 
-#ifdef RAIDXOR_DEBUG
-		if (bvto->bv_len != PAGE_SIZE)
-			CHECK_BUG("buffer has not length PAGE_SIZE");
-#endif
+	while (j < bioto->bi_vcnt) {
+		nsrcs = 0;
 
-		tomapped = (unsigned char *) kmap(bvto->bv_page);
-		frommapped = (unsigned char *) kmap(bvfrom->bv_page);
+		for (i = j; i < bioto->bi_vcnt && i < (j + 5); ++i) {
+			bvto = bio_iovec_idx(bioto, i);
+			bvfrom = bio_iovec_idx(biofrom, i);
 
-		toptr = tomapped + bvto->bv_offset;
-		fromptr = frommapped + bvfrom->bv_offset;
+			tomapped = (unsigned char *) kmap(bvto->bv_page);
+			frommapped = (unsigned char *) kmap(bvfrom->bv_page);
 
-		/* printk(KERN_EMERG "combining buffer %p to buffer %p\n", fromptr, toptr); */
+			toptr = tomapped + bvto->bv_offset;
+			fromptr = frommapped + bvfrom->bv_offset;
 
-#if 0
-		for (j = 0; j < bvto->bv_len; ++j, ++toptr, ++fromptr) {
-			*toptr ^= *fromptr;
+			srcs[i] = fromptr;
+			++nsrcs;
 		}
-#else
-		srcs[0] = fromptr;
-		xor_blocks(1, PAGE_SIZE, toptr, srcs);
-#endif
 
-		kunmap(bvfrom->bv_page);
-		kunmap(bvto->bv_page);
+		xor_blocks(nsrcs, PAGE_SIZE, toptr, srcs);
+
+		for (i = j; i < bio->bi_vcnt && i < (j + 5); ++i) {
+			bvto = bio_iovec_idx(bioto, i);
+			bvfrom = bio_iovec_idx(biofrom, i);
+
+			kunmap(bvfrom->bv_page);
+			kunmap(bvto->bv_page);
+		}
+
+		j = i;
 	}
 }
 
