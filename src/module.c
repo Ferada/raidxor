@@ -1054,14 +1054,17 @@ static void raidxord(mddev_t *mddev)
 	cache_t *cache;
 	unsigned int handled = 0;
 	unsigned int done = 0;
-#ifdef RAIDXOR_DEBUG
 	unsigned long flags = 0;
-#endif
 
 	CHECK_ARG_RET(mddev);
 
 	conf = mddev_to_conf(mddev);
 	CHECK_PLAIN_RET(conf);
+
+	WITHLOCKCONF(conf, flags, {
+	done = !conf->configured;
+	});
+	if (done) return;
 
 	cache = conf->cache;
 	CHECK_PLAIN_RET(cache);

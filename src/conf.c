@@ -337,14 +337,18 @@ raidxor_store_encoding(mddev_t *mddev, const char *page, size_t len)
 		index = *page++;
 		--len;
 
-		if (index >= conf->n_units)
+		if (index >= conf->n_units) {
+			printk(KERN_INFO "index out of bounds %u >= %u\n", index, conf->n_units);
 			goto out;
+		}
 
 		redundant = *page++;
 		--len;
 
-		if (redundant != 0 && redundant != 1)
+		if (redundant != 0 && redundant != 1) {
+			printk(KERN_INFO "redundant != (0 | 1) == %u\n", redundant);
 			return -EINVAL;
+		}
 
 		conf->units[index].redundant = redundant;
 
@@ -383,7 +387,7 @@ raidxor_store_encoding(mddev_t *mddev, const char *page, size_t len)
 		conf->units[index].encoding = encoding;
 		});
 
-		printk(KERN_INFO "read redundant unit encoding info\n");
+		printk(KERN_INFO "raidxor: read redundant unit encoding info for unit %u\n", index);
 	}
 
 	return oldlen;

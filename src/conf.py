@@ -321,7 +321,7 @@ def generate_encoding_shell_script (out):
             out.write ("""echo -en '\\0%s\\01\\0%s""" % (oct (i), oct (len (units[i].encoding))))
             for unit in units[i].encoding:
                 out.write ("""\\0%s""" % (oct (units.index (unit))))
-        out.write ("' > /sys/block/%s/md/encoding\n" % (block_name (raid_device)))
+        out.write ("' > tmp && cat tmp > /sys/block/%s/md/encoding\n" % (block_name (raid_device)))
 
 def generate_decoding_shell_script (out):
     global units
@@ -332,13 +332,18 @@ def generate_decoding_shell_script (out):
         out.write ("""echo -en '\\0%s\\0%s""" % (oct (i), oct (len (units[i].decoding))))
         for unit in units[i].decoding:
             out.write ("""\\0%s""" % (oct (units.index (unit))))
-        out.write ("' > /sys/block/%s/md/decoding\n" % (block_name (raid_device)))
+        out.write ("' > tmp && cat tmp > /sys/block/%s/md/decoding\n" % (block_name (raid_device)))
 
 def generate_stop_shell_script (out):
     out.write (
 """#!/bin/sh
 
 MDADM=%s
+
+if [[ -e tmp ]]
+then
+	echo "tmp file exists, aborting"
+fi
 
 $MDADM --manage %s -S
 """ % (opts.mdadm, raid_device))
@@ -351,6 +356,11 @@ def generate_start_shell_script (out):
 """#!/bin/sh
 
 MDADM=%s
+
+if [[ -e tmp ]]
+then
+	echo "tmp file exists, aborting"
+fi
 
 $MDADM -v -v --create %s -R -c %s --level=xor \\
 	--raid-devices=%s%s
