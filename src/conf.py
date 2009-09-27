@@ -189,7 +189,7 @@ def handle_unit_desc (line, match):
         sys.stderr.write ("overwriting description for %s\n" % unit.name)
     unit.device = device
 
-@match(re.compile ("^REDUNDANCY\s+(\w+)\s*=\s*\(([^\)]*)\)"))
+@match(re.compile ("^REDUNDANCY\s+(\w+)\s*=\s*XOR\s*\(([^\)]*)\)"))
 def handle_red (line, match):
     global units
     (name, red) = match.groups ()
