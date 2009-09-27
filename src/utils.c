@@ -59,9 +59,7 @@ static void raidxor_cache_add_request(cache_t *cache, unsigned int n_line,
 	CHECK_PLAIN_RET(line);
 
 	previous = line->waiting;
-	if (!previous) {
-		line->waiting = bio;
-	}
+	if (!previous) line->waiting = bio;
 	else {
 		while (previous->bi_next) {
 			previous = previous->bi_next;
@@ -86,9 +84,7 @@ static struct bio * raidxor_cache_remove_request(cache_t *cache,
 	CHECK_PLAIN_RET_NULL(line);
 
 	result = line->waiting;
-	if (result) {
-		line->waiting = result->bi_next;
-	}
+	if (result) line->waiting = result->bi_next;
 
 	return result;
 }
@@ -202,8 +198,7 @@ static void clear_bios(raidxor_bio_t *rxbio)
 	CHECK_ARG_RET(rxbio);
 
 	for (i = 0; i < rxbio->n_bios; ++i)
-		if (rxbio->bios[i])
-			clear_bio(rxbio->bios[i]);
+		if (rxbio->bios[i]) clear_bio(rxbio->bios[i]);
 }
 
 /**
@@ -500,7 +495,7 @@ static void raidxor_copy_bio(struct bio *bioto, struct bio *biofrom)
 		toptr = tomapped + bvto->bv_offset;
 		fromptr = frommapped + bvfrom->bv_offset;
 
-		memcpy(toptr, fromptr, min(bvto->bv_len, bvfrom->bv_len));
+		memmove(toptr, fromptr, min(bvto->bv_len, bvfrom->bv_len));
 
 		kunmap(bvfrom->bv_page);
 		kunmap(bvto->bv_page);
