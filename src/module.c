@@ -616,51 +616,65 @@ static int raidxor_check_same_size_and_layout(struct bio *x, struct bio *y)
 	return 0;
 }
 
-static int raidxor_xor_combine_decode(struct bio *bioto, raidxor_bio_t *rxbio,
-				      decoding_t *decoding)
+static int raidxor_xor_combine(struct bio *bioto, raidxor_bio_t *rxbio,
+			       unsigned int n_units, disk_info_t *units[0])
 {
 #undef CHECK_JUMP_LABEL
 #define CHECK_JUMP_LABEL out
 	/* since we have control over bioto and rxbio, every bio has size
 	   M * CHUNK_SIZE with CHUNK_SIZE = N * PAGE_SIZE */
-	unsigned int i;
+	unsigned int i, j, k, nsrcs;
 	unsigned int err __attribute__((unused));
 	struct bio *biofrom;
+	struct bio_vec *bvto;
+	unsigned char *tomapped;
+	const unsigned int nblocks = 5;
+	struct bio_vec *vecs[nblocks];
+	void *srcs[nblocks];
+	struct bio *bios[nblocks];
 
-	CHECK_FUN(raidxor_xor_combine_decode);
-
-	CHECK_ARGS3(bioto, rxbio, decoding);
+	CHECK_FUN(raidxor_xor_combine);
 
 	/* copying first bio buffers */
-	biofrom = raidxor_find_bio(rxbio, decoding->units[0]);
+	biofrom = raidxor_find_bio(rxbio, units[0]);
 	raidxor_copy_bio(bioto, biofrom);
 
-	/* then, xor the other buffers to the first one */
-	for (i = 1; i < decoding->n_units; ++i) {
-		/* printk(KERN_EMERG "decoding unit %u out of %d\n", i,
-		       decoding->n_units); */
-		/* search for the right bio */
-		biofrom = raidxor_find_bio(rxbio, decoding->units[i]);
+	/* XOR every NBLOCKS bio_vecs, repeating for all bio_vec of the bios */
+	i = 1;
+	while (i < n_units) {
+		for (j = 0; j < bioto->bi_vcnt; ++j) {
+			bvto = bio_iovec_idx(bioto, j);
+			tomapped = (unsigned char *) kmap(bvto->bv_page);
 
-		if (!biofrom) {
-			printk(KERN_EMERG "raidxor: didn't find bio in"
-			       " raidxor_xor_combine_decode\n");
-			goto out;
+			for (k = i, nsrcs = 0; k < n_units && k < (i + nblocks); ++k, ++nsrcs) {
+				if (j == 0) bios[nsrcs] = raidxor_find_bio(rxbio, units[k]);
+				vecs[nsrcs] = bio_iovec_idx(bios[nsrcs], j);
+
+				srcs[nsrcs] = kmap(vecs[nsrcs]->bv_page);
+			}
+
+			xor_blocks(nsrcs, PAGE_SIZE, tomapped, srcs);
+
+			for (k = 0; k < nsrcs; ++k)
+				kunmap(vecs[k]->bv_page);
+			kunmap(bvto->bv_page);
 		}
-
-#ifdef RAIDXOR_DEBUG
-		if ((err = raidxor_check_same_size_and_layout(bioto, biofrom))) {
-			printk(KERN_EMERG "raidxor: bioto and biofrom"
-			       " differ in size and/or layout: %u\n", err);
-			goto out;
-		}
-#endif
-
-		/* combine the data */
-		raidxor_xor_single(bioto, biofrom);
+		i += nsrcs;
 	}
 
 	return 0;
+out:
+	return 1;
+}
+
+static int raidxor_xor_combine_decode(struct bio *bioto, raidxor_bio_t *rxbio,
+				      decoding_t *decoding)
+{
+#undef CHECK_JUMP_LABEL
+#define CHECK_JUMP_LABEL out
+	CHECK_ARGS3(bioto, rxbio, decoding);
+
+	return raidxor_xor_combine(bioto, rxbio, decoding->n_units, decoding->units);
 out:
 	return 1;
 }
@@ -678,46 +692,9 @@ static int raidxor_xor_combine_encode(struct bio *bioto, raidxor_bio_t *rxbio,
 {
 #undef CHECK_JUMP_LABEL
 #define CHECK_JUMP_LABEL out
-	/* since we have control over bioto and rxbio, every bio has size
-	   M * CHUNK_SIZE with CHUNK_SIZE = N * PAGE_SIZE */
-	unsigned int i;
-	unsigned int err __attribute__((unused));
-	struct bio *biofrom;
-
-	CHECK_FUN(raidxor_xor_combine_encode);
-
 	CHECK_ARGS3(bioto, rxbio, encoding);
 
-	/* copying first bio buffers */
-	biofrom = raidxor_find_bio(rxbio, encoding->units[0]);
-	raidxor_copy_bio(bioto, biofrom);
-
-	/* then, xor the other buffers to the first one */
-	for (i = 1; i < encoding->n_units; ++i) {
-		/* printk(KERN_EMERG "encoding unit %u out of %d\n", i,
-		       encoding->n_units); */
-		/* search for the right bio */
-		biofrom = raidxor_find_bio(rxbio, encoding->units[i]);
-
-		if (!biofrom) {
-			printk(KERN_EMERG "raidxor: didn't find bio in"
-			       " raidxor_xor_combine_encode\n");
-			goto out;
-		}
-
-#ifdef RAIDXOR_DEBUG
-		if ((err = raidxor_check_same_size_and_layout(bioto, biofrom))) {
-			printk(KERN_EMERG "raidxor: bioto and biofrom"
-			       " differ in size and/or layout: %u\n", err);
-			goto out;
-		}
-#endif
-
-		/* combine the data */
-		raidxor_xor_single(bioto, biofrom);
-	}
-
-	return 0;
+	return raidxor_xor_combine(bioto, rxbio, encoding->n_units, encoding->units);
 out:
 	return 1;
 }

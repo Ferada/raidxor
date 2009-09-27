@@ -114,7 +114,7 @@ static unsigned int raidxor_cache_line_length_requests(cache_t *cache,
  */
 static struct bio * raidxor_find_bio(raidxor_bio_t *rxbio, disk_info_t *unit)
 {
-	unsigned long i;
+	unsigned int i;
 
 	CHECK_ARG_RET_NULL(rxbio);
 	CHECK_ARG_RET_NULL(unit);
