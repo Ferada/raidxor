@@ -547,52 +547,6 @@ static void raidxor_end_writeback_line(struct bio *bio, int error)
 }
 
 /**
- * raidxor_xor_single() - xors the buffers of two bios together
- *
- * Both bios have to be of the same size and layout.
- */
-static void raidxor_xor_single(struct bio *bioto, struct bio *biofrom)
-{
-	unsigned int i, j, nsrcs;
-	struct bio_vec *bvto, *bvfrom;
-	unsigned char *tomapped, *frommapped;
-	unsigned char *toptr, *fromptr;
-	void *srcs[5];
-
-	j = 0;
-
-	while (j < bioto->bi_vcnt) {
-		nsrcs = 0;
-
-		for (i = j; i < bioto->bi_vcnt && i < (j + 5); ++i) {
-			bvto = bio_iovec_idx(bioto, i);
-			bvfrom = bio_iovec_idx(biofrom, i);
-
-			tomapped = (unsigned char *) kmap(bvto->bv_page);
-			frommapped = (unsigned char *) kmap(bvfrom->bv_page);
-
-			toptr = tomapped + bvto->bv_offset;
-			fromptr = frommapped + bvfrom->bv_offset;
-
-			srcs[i] = fromptr;
-			++nsrcs;
-		}
-
-		xor_blocks(nsrcs, PAGE_SIZE, toptr, srcs);
-
-		for (i = j; i < bioto->bi_vcnt && i < (j + 5); ++i) {
-			bvto = bio_iovec_idx(bioto, i);
-			bvfrom = bio_iovec_idx(biofrom, i);
-
-			kunmap(bvfrom->bv_page);
-			kunmap(bvto->bv_page);
-		}
-
-		j = i;
-	}
-}
-
-/**
  * raidxor_check_same_size_and_layout() - checks two bios
  *
  * Returns 0 if both bios have the same size and are layed out the same
