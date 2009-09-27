@@ -32,11 +32,11 @@ static void raidxor_cache_print_status(cache_t *cache)
 {
 	unsigned int i;
 
-	printk(KERN_EMERG "cache with %u waiting, %u active lines\n",
+	printk(CHECK_LEVEL "cache with %u waiting, %u active lines\n",
 	       cache->n_waiting, cache->active_lines);
 
 	for (i = 0; i < cache->n_lines; ++i) {
-		printk(KERN_EMERG "line %u: %s at sector %llu, has %s request\n", i,
+		printk(CHECK_LEVEL "line %u: %s at sector %llu, has %s request\n", i,
 		       raidxor_cache_line_status(cache->lines[i]),
 		       (unsigned long long) cache->lines[i]->sector,
 		       cache->lines[i]->waiting ? "has at least one" : "has no");
@@ -272,8 +272,6 @@ static cache_t * raidxor_alloc_cache(unsigned int n_lines,
 	CHECK_PLAIN_RET_NULL(n_buffers != 0);
 	CHECK_PLAIN_RET_NULL(n_chunk_mult != 0);
 
-	printk(KERN_EMERG "alloc_cache allocating (%u + %u) * %u = %u buffers\n", n_buffers, n_red_buffers, n_chunk_mult, (n_buffers + n_red_buffers) * n_chunk_mult);
-
 	cache = kzalloc(sizeof(cache_t) + sizeof(cache_line_t *) * n_lines,
 			GFP_NOIO);
 	CHECK_ALLOC_RET_NULL(cache);
@@ -324,9 +322,8 @@ static void raidxor_cache_abort_requests(cache_t *cache, unsigned int line)
 {
 	struct bio *bio;
 
-	while ((bio = raidxor_cache_remove_request(cache, line))) {
+	while ((bio = raidxor_cache_remove_request(cache, line))
 		bio_io_error(bio);
-	}
 }
 
 static void raidxor_safe_free_decoding(disk_info_t *unit)
@@ -401,10 +398,6 @@ static void raidxor_copy_bio_to_cache(cache_t *cache, unsigned int n_line,
 	offset = bio->bi_sector;
 	line = cache->lines[n_line];
 
-	/* printk(KERN_EMERG "in line %u, going to virtual sector %llu\n",
-	       n_line, line->sector);
-	printk(KERN_EMERG "copying to offset %llu and line %u, ", offset, n_line); */
-
 	/* skip offset / some pages */
 	j = 0;
 	while (offset > 0) {
@@ -412,15 +405,11 @@ static void raidxor_copy_bio_to_cache(cache_t *cache, unsigned int n_line,
 		++j;
 	}
 
-	/* printk("buffer corrected to %d\n", j); */
-
 	CHECK_PLAIN_RET(offset >= 0);
 
 	bio_for_each_segment(bvl, bio, i) {
 		bio_mapped = __bio_kmap_atomic(bio, i, KM_USER0);
 		page_mapped = kmap(line->buffers[j]);
-
-		/* printk(KERN_EMERG "copying %lu bytes for index %d, buffer %d\n", PAGE_SIZE, i, j); */
 
 		memmove(page_mapped, bio_mapped, PAGE_SIZE);
 
@@ -449,10 +438,6 @@ static void raidxor_copy_bio_from_cache(cache_t *cache, unsigned int n_line,
 	offset = bio->bi_sector;
 	line = cache->lines[n_line];
 
-	/* printk(KERN_EMERG "in line %u, going to virtual sector %llu\n",
-	       n_line, line->sector);
-	printk(KERN_EMERG "copying from offset %llu and line %u, ", offset, n_line); */
-
 	/* skip offset / some pages */
 	j = 0;
 	while (offset > 0) {
@@ -460,15 +445,11 @@ static void raidxor_copy_bio_from_cache(cache_t *cache, unsigned int n_line,
 		++j;
 	}
 
-	/* printk("buffer corrected to %d\n", j); */
-
 	CHECK_PLAIN_RET(offset >= 0);
 
 	bio_for_each_segment(bvl, bio, i) {
 		bio_mapped = __bio_kmap_atomic(bio, i, KM_USER0);
 		page_mapped = kmap(line->buffers[j]);
-
-		/* printk(KERN_EMERG "copying %lu bytes for index %d, buffer %d\n", PAGE_SIZE, i, j); */
 
 		memmove(bio_mapped, page_mapped, PAGE_SIZE);
 
@@ -517,9 +498,6 @@ static stripe_t * raidxor_sector_to_stripe(raidxor_conf_t *conf, sector_t sector
 			break;
 		sector -= stripes[i]->size;
 	}
-
-	/* printk(KERN_EMERG "raidxor: stripe %lu, sector %lu\n",
-	       i, (unsigned long) sector); */
 
 	if (newsector)
 		*newsector = sector;
@@ -576,9 +554,8 @@ static unsigned int raidxor_cache_empty_lines(cache_t *cache)
 
 	for (i = 0; i < cache->n_lines; ++i)
 		if (cache->lines[i]->status == CACHE_LINE_CLEAN ||
-		    cache->lines[i]->status == CACHE_LINE_READY) {
+		    cache->lines[i]->status == CACHE_LINE_READY)
 			++result;
-		}
 
 	return result;
 }
@@ -663,9 +640,7 @@ static void raidxor_wait_for_writeback(raidxor_conf_t *conf)
 
 	/* signal raidxord to free all lines */
 	conf->cache->n_waiting = conf->cache->n_lines;
-/*	UNLOCKCONF(conf);*/
 	raidxor_wakeup_thread(conf);
-/*	LOCKCONF(conf);*/
 
 #ifdef RAIDXOR_DEBUG
 	printk(KERN_EMERG "active_lines = %d, n_waiting = %d\n",
@@ -693,9 +668,7 @@ static void raidxor_signal_empty_line(raidxor_conf_t *conf)
 {
 	CHECK_ARG_RET(conf);
 
-/*	UNLOCKCONF(conf);*/
 	wake_up(&conf->cache->wait_for_line);
-/*	LOCKCONF(conf);*/
 }
 
 #if 0
