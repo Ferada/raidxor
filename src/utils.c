@@ -322,7 +322,7 @@ static void raidxor_cache_abort_requests(cache_t *cache, unsigned int line)
 {
 	struct bio *bio;
 
-	while ((bio = raidxor_cache_remove_request(cache, line))
+	while ((bio = raidxor_cache_remove_request(cache, line)))
 		bio_io_error(bio);
 }
 
