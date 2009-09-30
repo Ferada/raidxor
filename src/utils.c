@@ -619,7 +619,7 @@ static void raidxor_wait_for_empty_line(raidxor_conf_t *conf)
 	/* signal raidxord to free some lines */
 	++conf->cache->n_waiting;
 
-//	raidxor_wakeup_thread(conf);
+	raidxor_wakeup_thread(conf);
 
 	#ifdef RAIDXOR_DEBUG
 	printk(KERN_EMERG "WAITING\n");
