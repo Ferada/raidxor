@@ -32,6 +32,12 @@ parser.add_option ("-n", "--noscript", dest = "script",
 parser.add_option ("-e", "--exec", dest = "execute",
                    action = "store_true", default = False,
                    help = "executes the specification")
+parser.add_option ("-k", "--data-resources", dest = "data_resources", default = 0,
+                   help = "the number of data resources")
+parser.add_option ("-m", "--redundant-resources", dest = "redundant_resources", default = 0,
+                   help = "the number of redundant resources")
+parser.add_option ("-M", "--polynomial", dest = "polynomial", default = 0,
+                   help = "modular polynomial")
 parser.set_usage ("""Usage: conf.py [options]
 
 Constructs a shell script from the specification on stdin or otherwise
@@ -48,6 +54,8 @@ The format for the specification is as follows:
   UNIT_DESCR u0, /dev/bar
 
   REDUNDANCY destunit = XOR(u4, u2, ..., un)
+
+  TEMPORARY tempunit = XOR(u3, u2, ..., un)
 
 and additionally for decoding equations
 
@@ -98,6 +106,16 @@ class unit ():
     def mdname (self):
         return os.path.basename (self.device)
 
+class temporary ():
+    def __init__ (self, name, encoding = []):
+        self.name = name
+        self.encoding = encoding
+    def __repr__ (self):
+        red = ""
+        if self.encoding:
+            red = ", %s" % [unit.name for unit in self.encoding]
+        return "<temporary %s%s>" % (self.name, enc)
+
 def die (msg):
     sys.stderr.write (msg + "\n")
     sys.exit (-1)
@@ -124,7 +142,16 @@ def parse_units (units):
 
 def convert_units (names):
     global units
-    return [find_unit (name) for name in names]
+    return [find_unit_or_temporary (name) for name in names]
+
+def find_unit_or_temporary (name):
+    global units
+    unit = filter (lambda x: x.name == name, units)
+    if not unit:
+        result = temporary (name)
+        units.append (result)
+        return result
+    return unit[0]
 
 def find_unit (name):
     global units
@@ -200,7 +227,7 @@ def handle_red (line, match):
         sys.stderr.write ("overwriting encoding for %s\n" % unit.name)
     unit.encoding = convert_units (parse_units (red))
 
-@match(re.compile ("^DECODING\s+(\w+)\s*=\s*\(([^\)]*)\)"))
+@match(re.compile ("^DECODING\s+(\w+)\s*=\s*XOR\s*\(([^\)]*)\)"))
 def handle_dec (line, match):
     global units
     (name, dec) = match.groups ()
@@ -210,6 +237,17 @@ def handle_dec (line, match):
         sys.stderr.write ("overwriting decoding for %s\n" % unit.name)
     unit.decoding = convert_units (parse_units (dec))
 
+@match(re.compile ("^TEMPORARY\s+(\w+)\s*=\s*XOR\s*\(([^\)]*)\)"))
+def handle_temp (line, match):
+    global units
+    (name, dec) = match.groups ()
+
+    pass
+#    unit = find_unit (name)
+#    if unit.decoding:
+#        sys.stderr.write ("overwriting temporary for %s\n" % unit.name)
+#    unit.decoding = convert_units (parse_units (dec))
+
 matchers = [
     handle_raid_desc,
     handle_res,
@@ -217,6 +255,7 @@ matchers = [
     handle_units,
     handle_unit_desc,
     handle_red,
+    handle_temp,
 ]
 
 def try_matchers (line):
@@ -275,6 +314,8 @@ def check_resources ():
 
 def check_units ():
     for unit in units:
+        if isinstance(unit, temporary):
+            continue
         if not unit.redundant:
             continue
 
@@ -297,7 +338,8 @@ def check_rect_layout ():
     for res in resources:
         if len (res.units) != l:
             die ("no rectangular layout, resource dimensions differ")
-    if len (units) != len (resources) * l:
+    tmp = filter (lambda x: isinstance(x, unit), units)
+    if len (tmp) != len (resources) * l:
         die ("no rectangular layout, some units are amiss")
 
 convert_resources ()
@@ -314,24 +356,28 @@ def block_name (device):
 def generate_encoding_shell_script (out):
     global units
 
-    for i in range (0, len (units)):
-        if not units[i].redundant:
+    tmp = filter (lambda x: isinstance(x, unit), units)
+
+    for i in range (0, len (tmp)):
+        if not tmp[i].redundant:
             out.write ("""echo -en '\\0%s\\00""" % (oct (i)))
         else:
-            out.write ("""echo -en '\\0%s\\01\\0%s""" % (oct (i), oct (len (units[i].encoding))))
-            for unit in units[i].encoding:
-                out.write ("""\\0%s""" % (oct (units.index (unit))))
+            out.write ("""echo -en '\\0%s\\01\\0%s""" % (oct (i), oct (len (tmp[i].encoding))))
+            for u in tmp[i].encoding:
+                out.write ("""\\0%s""" % (oct (tmp.index (u))))
         out.write ("' > tmp && cat tmp > /sys/block/%s/md/encoding\n" % (block_name (raid_device)))
 
 def generate_decoding_shell_script (out):
     global units
 
-    for i in range (0, len (units)):
-        if not units[i].faulty:
+    tmp = filter (lambda x: isinstance(x, unit), units)
+
+    for i in range (0, len (tmp)):
+        if not tmp[i].faulty:
             continue
-        out.write ("""echo -en '\\0%s\\0%s""" % (oct (i), oct (len (units[i].decoding))))
-        for unit in units[i].decoding:
-            out.write ("""\\0%s""" % (oct (units.index (unit))))
+        out.write ("""echo -en '\\0%s\\0%s""" % (oct (i), oct (len (tmp[i].decoding))))
+        for unit in tmp[i].decoding:
+            out.write ("""\\0%s""" % (oct (tmp.index (unit))))
         out.write ("' > tmp && cat tmp > /sys/block/%s/md/decoding\n" % (block_name (raid_device)))
 
 def generate_stop_shell_script (out):
@@ -350,8 +396,8 @@ $MDADM --manage %s -S
 
 def generate_start_shell_script (out):
     units_formatted = ""
-    for unit in units:
-        units_formatted += " " + unit.device
+    for u in filter (lambda x: isinstance(x, unit), units):
+        units_formatted += " " + u.device
     out.write (
 """#!/bin/sh
 
@@ -393,15 +439,19 @@ def parse_cauchyrs ():
     n = 0
     for i in range (0, len (resources)):
         print resources[i]
-        if resources[i].faulty:
+        if resources[i].faulty or n < opts.redundant_resources:
             failed += " -f%s=%s" % (n, i)
             n += 1
-    cmdline = "%s %s %s" % (opts.cauchyrs, opts.cauchyopts, failed)
+    cmdline = "%s -k=%s -m=%s -M=%s %s %s" % (
+        opts.cauchyrs, opts.data_resources,
+        opts.redundant_resources, opts.polynomial,
+        opts.cauchyopts, failed)
     print cmdline
 
     (subout, subin) = popen2.popen2 (cmdline)
     for line in subout:
-        handle_dec (line)
+        if not handle_dec (line):
+            handle_temp (line)
 
 files = []
 if opts.script:
@@ -410,9 +460,20 @@ if opts.script:
 if opts.execute:
     files.append (os.popen ("/bin/sh", "w"))
 
+if opts.mode == "start" or opts.mode == "restart" or opts.mode == "decode":
+    if opts.redundant_resources == 0:
+        print "no number of redundant resources specified"
+        sys.exit (1)
+    if opts.data_resources == 0:
+        print "no number of data resources specified"
+        sys.exit (1)
+    if opts.polynomial == 0:
+        print "no modular polynomial specified"
+        sys.exit (1)
+
 if opts.mode == "stop" or opts.mode == "restart":
     [generate_stop_shell_script (file) for file in files]
-if opts.mode == "start" or opts.mode == "start":
+if opts.mode == "start" or opts.mode == "restart":
     [generate_start_shell_script (file) for file in files]
 if opts.mode == "decode":
     print "cauchyrs executable at %s" % opts.cauchyrs
