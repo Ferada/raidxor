@@ -204,8 +204,9 @@ raidxor_store_units_per_resource(mddev_t *mddev, const char *page, size_t len)
 	WITHLOCKCONF(conf, flags, {
 	raidxor_safe_free_conf(conf);
 	conf->units_per_resource = new;
-	raidxor_try_configure_raid(conf);
 	});
+
+	raidxor_try_configure_raid(conf);
 
 	return len;
 }
@@ -240,8 +241,9 @@ raidxor_store_resources_per_stripe(mddev_t *mddev, const char *page, size_t len)
 	WITHLOCKCONF(conf, flags, {
 	raidxor_safe_free_conf(conf);
 	conf->resources_per_stripe = new;
-	raidxor_try_configure_raid(conf);
 	});
+
+	raidxor_try_configure_raid(conf);
 
 	return len;
 }
