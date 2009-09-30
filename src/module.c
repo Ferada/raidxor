@@ -179,8 +179,7 @@ static unsigned int raidxor_bio_index(raidxor_bio_t *rxbio,
 				*data_index = k;
 			return i;
 		}
-		if (!rxbio->stripe->units[i]->redundant)
-			++k;
+		if (!rxbio->stripe->units[i]->redundant) ++k;
 	}
 	CHECK_BUG("didn't find bio");
 	return 0;
@@ -247,6 +246,7 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 	stripe = raidxor_sector_to_stripe(conf, line->sector,
 					  &actual_sector);
 	CHECK_PLAIN(stripe);
+
 	/* unrecoverable error, abort */
 	if (test_bit(STRIPE_ERROR, &stripe->flags)) {
 		CHECK_BUG("stripe with error code in load_line");
@@ -265,12 +265,9 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 
 	line->rxbio = rxbio;
 
-	CHECK_LINE;
-
 	n_chunk_mult = cache->n_chunk_mult;
 
 	for (i = 0, l = 0; i < rxbio->n_bios; ++i) {
-		/* printk(KERN_EMERG "i = %u, l = %u, rxbio->n_bios = %u, stripe->n_units = %u\n", i, l, rxbio->n_bios, stripe->n_units); */
 		/* we also load the redundant pages */
 
 		/* only one chunk */
@@ -290,23 +287,12 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 
 		bio->bi_size = n_chunk_mult * PAGE_SIZE;
 
-		/* printk(KERN_EMERG "load %lu bytes at physical sector %lu from device %s\n", bio->bi_size, bio->bi_sector, bdevname(bio->bi_bdev, buffer)); */
-
-		/* printk(KERN_EMERG "bio->bi_size = %u, bio = %p\n", bio->bi_size, bio); */
-
-		/* printk(KERN_EMERG "cache->n_buffers = %d, n_red_buffers = %d\n",
-		       cache->n_buffers, cache->n_red_buffers); */
 		/* assign pages */
 		bio->bi_vcnt = n_chunk_mult;
 		for (j = 0; j < n_chunk_mult; ++j) {
-			if (stripe->units[i]->redundant) {
+			if (stripe->units[i]->redundant)
 				k = (cache->n_buffers + l) * n_chunk_mult + j;
-				/* printk(KERN_EMERG "[%d], red k = %d\n", j, k); */
-			}
-			else {
-				k = i * n_chunk_mult + j;
-				/* printk(KERN_EMERG "[%d], nonred k = %d\n", j, k); */
-			}
+			else k = i * n_chunk_mult + j;
 
 			CHECK_PLAIN(line->buffers[k]);
 			bio->bi_io_vec[j].bv_page = line->buffers[k];
@@ -315,11 +301,9 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 			bio->bi_io_vec[j].bv_offset = 0;
 		}
 
-		if (stripe->units[i]->redundant)
-			++l;
+		if (stripe->units[i]->redundant) ++l;
 
 		if (test_bit(Faulty, &stripe->units[i]->rdev->flags)) {
-			/* printk(KERN_EMERG "got faulty drive during load\n"); */
 			--rxbio->remaining;
 			if (!stripe->units[i]->redundant)
 				rxbio->faulty = 1;
@@ -405,30 +389,21 @@ static int raidxor_cache_writeback_line(cache_t *cache, unsigned int n)
 
 		bio->bi_size = n_chunk_mult * PAGE_SIZE;
 
-		/* printk(KERN_EMERG "write %u bytes at physical sector %llu to device %s\n", bio->bi_size, bio->bi_sector, bdevname(bio->bi_bdev, buffer)); */
-
 		bio->bi_vcnt = n_chunk_mult;
 		/* assign pages */
 		for (j = 0; j < n_chunk_mult; ++j) {
-			if (stripe->units[i]->redundant) {
+			if (stripe->units[i]->redundant)
 				k = (cache->n_buffers + l) * n_chunk_mult + j;
-				/* printk(KERN_EMERG "[%d], red k = %d\n", j, k); */
-			}
-			else {
-				k = i * n_chunk_mult + j;
-				/* printk(KERN_EMERG "[%d], nonred k = %d\n", j, k); */
-			}
+			else k = i * n_chunk_mult + j;
 
 			bio->bi_io_vec[j].bv_page = line->buffers[k];
 			bio->bi_io_vec[j].bv_len = PAGE_SIZE;
 			bio->bi_io_vec[j].bv_offset = 0;
 		}
 
-		if (stripe->units[i]->redundant)
-			++l;
+		if (stripe->units[i]->redundant) ++l;
 
 		if (test_bit(Faulty, &stripe->units[i]->rdev->flags)) {
-			/* printk(KERN_INFO "raidxor: got a faulty drive during writeback\n"); */
 			--rxbio->remaining;
 			if (!stripe->units[i]->redundant)
 				rxbio->faulty = 1;
@@ -485,8 +460,6 @@ static void raidxor_end_load_line(struct bio *bio, int error)
 
 	index = raidxor_bio_index(rxbio, bio, &data_index);
 
-	/* CHECK_LINE; */
-
 	if (error) {
 		WITHLOCKCONF(conf, flags, {
 		if (!stripe->units[index]->redundant)
@@ -495,12 +468,8 @@ static void raidxor_end_load_line(struct bio *bio, int error)
 		md_error(conf->mddev, stripe->units[index]->rdev);
 	}
 
-	CHECK_LINE;
-
 	WITHLOCKCONF(conf, flags, {
 	if ((--rxbio->remaining) == 0) {
-		/* printk(KERN_EMERG "last callback for line %d, waking thread, %u faulty\n", */
-		/*        rxbio->line, rxbio->faulty); */
 		if (rxbio->faulty)
 			line->status = CACHE_LINE_FAULTY;
 		else  {
@@ -582,13 +551,9 @@ static int raidxor_check_same_size_and_layout(struct bio *x, struct bio *y)
 		return 1;
 
 	/* and those are of the same length, pairwise */
-	for (i = 0; i < x->bi_vcnt; ++i) {
-		/* FIXME: if this not printd, the test fails */
-		/* printk(KERN_INFO "comparing %d and %d\n",
-		       x->bi_io_vec[i].bv_len, y->bi_io_vec[i].bv_len); */
+	for (i = 0; i < x->bi_vcnt; ++i)
 		if (x->bi_io_vec[i].bv_len != y->bi_io_vec[i].bv_len)
 			return 2;
-	}
 
 	return 0;
 }
@@ -722,7 +687,6 @@ static void raidxor_cache_recover(cache_t *cache, unsigned int n_line)
 					       stripe->units[i]->decoding))
 			goto out_free_rxbio;
 	}
-	/* printk(KERN_EMERG "decoded\n"); */
 
 	WITHLOCKCONF(conf, flags, {
 	line->rxbio = NULL;
@@ -768,9 +732,6 @@ static void raidxor_invalidate_decoding(raidxor_conf_t *conf,
 		    raidxor_find_unit_decoding(stripe->units[i]->decoding,
 					       unit)) {
 			raidxor_safe_free_decoding(stripe->units[i]);
-			/* printk(KERN_EMERG "raidxor: unit %u requests decoding"
-			       " information\n",
-			       raidxor_unit_to_index(conf, stripe->units[i])); */
 		}
 
 	printk(KERN_CRIT "raidxor: raid %s needs new decoding information\n",
@@ -965,7 +926,7 @@ static int raidxor_handle_line(cache_t *cache, unsigned int n_line)
 	unsigned long flags = 0;
 	unsigned int commit = 0, done = 0;
 
-	/* CHECK_FUN(raidxor_handle_line); */
+	CHECK_FUN(raidxor_handle_line);
 
 	CHECK_ARG_RET_VAL(cache);
 	CHECK_PLAIN_RET_VAL(n_line < cache->n_lines);
@@ -1113,19 +1074,19 @@ static int raidxor_run(mddev_t *mddev)
 	unsigned long i;
 
 	if (mddev->level != LEVEL_XOR) {
-		printk(KERN_EMERG "raidxor: %s: raid level not set to xor (%d)\n",
+		printk(KERN_ERR "raidxor: %s: raid level not set to xor (%d)\n",
 		       mdname(mddev), mddev->level);
 		goto out_inval;
 	}
 
 	if (mddev->chunk_size < PAGE_SIZE) {
-		printk(KERN_EMERG "raidxor: chunk_size must be at least "
+		printk(KERN_ERR "raidxor: chunk_size must be at least "
 		       "PAGE_SIZE but %d < %ld\n",
 		       mddev->chunk_size, PAGE_SIZE);
 		goto out_inval;
 	}
 
-	printk(KERN_EMERG "raidxor: raid set %s active with %d disks\n",
+	printk(KERN_ERR "raidxor: raid set %s active with %d disks\n",
 	       mdname(mddev), mddev->raid_disks);
 
 	if (mddev->raid_disks < 1)
@@ -1135,7 +1096,7 @@ static int raidxor_run(mddev_t *mddev)
 		       sizeof(struct disk_info) * mddev->raid_disks, GFP_KERNEL);
 	mddev->private = conf;
 	if (!conf) {
-		printk(KERN_EMERG "raidxor: couldn't allocate memory for %s\n",
+		printk(KERN_ERR "raidxor: couldn't allocate memory for %s\n",
 		       mdname(mddev));
 		goto out;
 	}
@@ -1151,7 +1112,6 @@ static int raidxor_run(mddev_t *mddev)
 	conf->stripes = NULL;
 	conf->n_units = mddev->raid_disks;
 
-	printk(KERN_EMERG "whoo, setting hardsect size to %d\n", 4096);
 	blk_queue_hardsect_size(mddev->queue, 4096);
 
 	spin_lock_init(&conf->device_lock);
@@ -1164,7 +1124,7 @@ static int raidxor_run(mddev_t *mddev)
 	rdev_for_each(rdev, tmp, mddev) {
 		size = min(size, rdev->size);
 
-		printk(KERN_EMERG "raidxor: device %lu rdev %s, %llu blocks\n",
+		printk(KERN_ERR "raidxor: device %lu rdev %s, %llu blocks\n",
 		       i, bdevname(rdev->bdev, buffer),
 		       (unsigned long long) rdev->size * 2);
 		conf->units[i].rdev = rdev;
@@ -1175,9 +1135,6 @@ static int raidxor_run(mddev_t *mddev)
 	if (size == -1)
 		goto out_free_conf;
 
-	printk(KERN_EMERG "raidxor: used component size: %llu sectors\n",
-	       (unsigned long long) size & ~(conf->chunk_size / 1024 - 1));
-
 	/* used component size in sectors, multiple of chunk_size ... */
 	mddev->size = size & ~(conf->chunk_size / 1024 - 1);
 	/* exported size in blocks, will be initialised later */
@@ -1185,7 +1142,7 @@ static int raidxor_run(mddev_t *mddev)
 
 	/* Ok, everything is just fine now */
 	if (sysfs_create_group(&mddev->kobj, &raidxor_attrs_group)) {
-		printk(KERN_EMERG
+		printk(KERN_ERR
 		       "raidxor: failed to create sysfs attributes for %s\n",
 		       mdname(mddev));
 		goto out_free_conf;
@@ -1193,7 +1150,7 @@ static int raidxor_run(mddev_t *mddev)
 
 	mddev->thread = md_register_thread(raidxord, mddev, "%s_raidxor");
 	if (!mddev->thread) {
-		printk(KERN_EMERG
+		printk(KERN_ERR
 		       "raidxor: couldn't allocate thread for %s\n",
 		       mdname(mddev));
 		goto out_free_sysfs;
@@ -1328,10 +1285,6 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 	if (test_bit(CONF_STOPPING, &conf->flags))
 		goto out_unlock;
 
-	/*printk(KERN_EMERG "virtual sector %llu, length %u, %s",
-	       (unsigned long long) bio->bi_sector, bio->bi_size,
-	       (bio_data_dir(bio) == WRITE) ? "write" : "read");*/
-
 	CHECK_PLAIN(!raidxor_check_bio_size_and_layout(conf, bio));
 
 	stripe = raidxor_sector_to_stripe(conf, bio->bi_sector, NULL);
@@ -1345,9 +1298,6 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 
 	/* set as offset to new base */
 	bio->bi_sector = bio->bi_sector - aligned_sector;
-
-	/*printk(KERN_EMERG " aligned_sector %llu, bio->bi_sector %llu\n",
-	       aligned_sector, bio->bi_sector);*/
 
 	/* checked assumption is: aligned_sector is aligned to
 	   strip/cache line, bio->bi_sector is the offset inside this strip
@@ -1367,7 +1317,7 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 
 	if (bio->bi_sector + (bio->bi_size >> 9) > strip_sectors) {
 		/* TODO: split bio */
-		printk(KERN_EMERG "need to split request because "
+		printk(KERN_ERR "need to split request because "
 		       "%llu > %llu\n",
 		       (unsigned long long) (bio->bi_sector +
 					     (bio->bi_size >> 9)),
