@@ -410,14 +410,18 @@ static void raidxor_copy_bio_to_cache(cache_t *cache, unsigned int n_line,
 	CHECK_PLAIN_RET(offset >= 0);
 
 	bio_for_each_segment(bvl, bio, i) {
+		CHECK_MAP;
 		bio_mapped = __bio_kmap_atomic(bio, i, KM_USER0);
-		page_mapped = kmap(line->buffers[j]);
+		CHECK_MAP;
+		page_mapped = kmap_atomic(line->buffers[j], KM_USER0);
+		//page_mapped = kmap(line->buffers[j]);
 
-		printk(KERN_EMERG "copying %lu bytes for index %d, buffer %d\n", PAGE_SIZE, i, j);
+		/* printk(KERN_EMERG "copying %lu bytes for index %d, buffer %d\n", PAGE_SIZE, i, j); */
 
 		memmove(page_mapped, bio_mapped, PAGE_SIZE);
 
-		kunmap(line->buffers[j]);
+		kunmap_atomic(page_mapped, KM_USER0);
+		//kunmap(line->buffers[j]);
 		__bio_kunmap_atomic(bio_mapped, KM_USER0);
 		++j;
 	}
@@ -454,14 +458,18 @@ static void raidxor_copy_bio_from_cache(cache_t *cache, unsigned int n_line,
 	CHECK_PLAIN_RET(offset >= 0);
 
 	bio_for_each_segment(bvl, bio, i) {
+		CHECK_MAP;
 		bio_mapped = __bio_kmap_atomic(bio, i, KM_USER0);
-		page_mapped = kmap(line->buffers[j]);
+		CHECK_MAP;
+		page_mapped = kmap_atomic(line->buffers[j], KM_USER0);
+		//page_mapped = kmap(line->buffers[j]);
 
-		printk(KERN_EMERG "copying %lu bytes for index %d, buffer %d\n", PAGE_SIZE, i, j);
+		/* printk(KERN_EMERG "copying %lu bytes for index %d, buffer %d\n", PAGE_SIZE, i, j); */
 
 		memmove(bio_mapped, page_mapped, PAGE_SIZE);
 
-		kunmap(line->buffers[j]);
+		kunmap_atomic(page_mapped, KM_USER0);
+		//kunmap(line->buffers[j]);
 		__bio_kunmap_atomic(bio_mapped, KM_USER0);
 		++j;
 	}
@@ -480,7 +488,9 @@ static void raidxor_copy_bio(struct bio *bioto, struct bio *biofrom)
 		bvto = bio_iovec_idx(bioto, i);
 		bvfrom = bio_iovec_idx(biofrom, i);
 
+		CHECK_MAP;
 		tomapped = (unsigned char *) kmap(bvto->bv_page);
+		CHECK_MAP;
 		frommapped = (unsigned char *) kmap(bvfrom->bv_page);
 
 		toptr = tomapped + bvto->bv_offset;
@@ -579,15 +589,45 @@ static unsigned int raidxor_cache_empty_lines(cache_t *cache)
 static void raidxor_wakeup_thread(raidxor_conf_t *conf)
 {
 	CHECK_ARG_RET(conf);
+#ifdef RAIDXOR_DEBUG
+	if (spin_is_locked(&conf->device_lock))
+		CHECK_BUG("spin is locked");
+#endif
 	md_wakeup_thread(conf->mddev->thread);
 }
+
+#define __wait_event_lock_irqsave(wq, condition, lock, flags, cmd) 	\
+do {									\
+	wait_queue_t __wait;						\
+	init_waitqueue_entry(&__wait, current);				\
+									\
+	add_wait_queue(&wq, &__wait);					\
+	for (;;) {							\
+		set_current_state(TASK_UNINTERRUPTIBLE);		\
+		if (condition)						\
+			break;						\
+		spin_unlock_irqrestore(&lock, flags);			\
+		cmd;							\
+		schedule();						\
+		spin_lock_irqsave(&lock, flags);			\
+	}								\
+	current->state = TASK_RUNNING;					\
+	remove_wait_queue(&wq, &__wait);				\
+} while (0)
+
+#define wait_event_lock_irqsave(wq, condition, lock, flags, cmd) 	\
+do {									\
+	if (condition)	 						\
+		break;							\
+	__wait_event_lock_irqsave(wq, condition, lock, flags, cmd);	\
+} while (0)
 
 /**
  * raidxor_wait_for_no_active_lines() - waits until no lines are active
  *
  * Needs to be called with conf->device_lock held.
  */
-static void raidxor_wait_for_no_active_lines(raidxor_conf_t *conf)
+static void raidxor_wait_for_no_active_lines(raidxor_conf_t *conf, unsigned long *flags)
 {
 	CHECK_ARG_RET(conf);
 
@@ -596,9 +636,9 @@ static void raidxor_wait_for_no_active_lines(raidxor_conf_t *conf)
 	printk(KERN_EMERG "WAITING\n");
 	#endif
 
-	wait_event_lock_irq(conf->cache->wait_for_line,
-			    conf->cache->active_lines == 0,
-			    conf->device_lock, /* nothing */);
+	wait_event_lock_irqsave(conf->cache->wait_for_line,
+				conf->cache->active_lines == 0,
+				conf->device_lock, *flags, /* nothing */);
 	#ifdef RAIDXOR_DEBUG
 	printk(KERN_EMERG "WAITING DONE\n");
 	#endif
@@ -612,27 +652,26 @@ static void raidxor_wait_for_no_active_lines(raidxor_conf_t *conf)
  * Also stops if CONF_STOPPING is set (but you've to test for that
  * condition nevertheless.
  */
-static void raidxor_wait_for_empty_line(raidxor_conf_t *conf)
+static void raidxor_wait_for_empty_line(raidxor_conf_t *conf, unsigned long *flags)
 {
 	CHECK_ARG_RET(conf);
 
 	/* signal raidxord to free some lines */
 	++conf->cache->n_waiting;
-
 	raidxor_wakeup_thread(conf);
 
 	#ifdef RAIDXOR_DEBUG
 	printk(KERN_EMERG "WAITING\n");
 	#endif
 
-	wait_event_lock_irq(conf->cache->wait_for_line,
-			    raidxor_cache_empty_lines(conf->cache) > 0 ||
-			    test_bit(CONF_STOPPING, &conf->flags),
-			    conf->device_lock,
+	wait_event_lock_irqsave(conf->cache->wait_for_line,
+				raidxor_cache_empty_lines(conf->cache) > 0 ||
+				test_bit(CONF_STOPPING, &conf->flags),
+				conf->device_lock, *flags,
 #ifdef RAIDXOR_DEBUG
-			    printk(KERN_EMERG "wait condition still not matched: %d, still waiting %d\n",
-				   raidxor_cache_empty_lines(conf->cache),
-				   conf->cache->n_waiting)
+				printk(KERN_EMERG "wait condition still not matched: %d, still waiting %d\n",
+				       raidxor_cache_empty_lines(conf->cache),
+				       conf->cache->n_waiting)
 #endif
 );
 
@@ -642,13 +681,13 @@ static void raidxor_wait_for_empty_line(raidxor_conf_t *conf)
 	--conf->cache->n_waiting;
 }
 
-static void raidxor_wait_for_writeback(raidxor_conf_t *conf)
+static void raidxor_wait_for_writeback(raidxor_conf_t *conf, unsigned long *flags)
 {
 	CHECK_ARG_RET(conf);
 
 	/* signal raidxord to free all lines */
 	conf->cache->n_waiting = conf->cache->n_lines;
-//	raidxor_wakeup_thread(conf);
+	raidxor_wakeup_thread(conf);
 
 #ifdef RAIDXOR_DEBUG
 	printk(KERN_EMERG "active_lines = %d, n_waiting = %d\n",
@@ -657,11 +696,11 @@ static void raidxor_wait_for_writeback(raidxor_conf_t *conf)
 	printk(KERN_EMERG "WAITING\n");
 #endif
 
-	wait_event_lock_irq(conf->cache->wait_for_line,
-			    raidxor_cache_empty_lines(conf->cache) == conf->cache->n_lines ||
-			    (conf->cache->active_lines == 0 &&
-			     conf->cache->n_waiting == 0),
-			    conf->device_lock, /* nothing */);
+	wait_event_lock_irqsave(conf->cache->wait_for_line,
+				raidxor_cache_empty_lines(conf->cache) == conf->cache->n_lines ||
+				(conf->cache->active_lines == 0 &&
+				 conf->cache->n_waiting == 0),
+				conf->device_lock, *flags, /* nothing */);
 #ifdef RAIDXOR_DEBUG
 	printk(KERN_EMERG "WAITING DONE\n");
 #endif
