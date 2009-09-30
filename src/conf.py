@@ -376,8 +376,8 @@ def generate_decoding_shell_script (out):
         if not tmp[i].faulty:
             continue
         out.write ("""echo -en '\\0%s\\0%s""" % (oct (i), oct (len (tmp[i].decoding))))
-        for unit in tmp[i].decoding:
-            out.write ("""\\0%s""" % (oct (tmp.index (unit))))
+        for u in tmp[i].decoding:
+            out.write ("""\\0%s""" % (oct (tmp.index (u))))
         out.write ("' > tmp && cat tmp > /sys/block/%s/md/decoding\n" % (block_name (raid_device)))
 
 def generate_stop_shell_script (out):
@@ -438,7 +438,6 @@ def parse_cauchyrs ():
     failed = ""
     n = 0
     for i in range (0, len (resources)):
-        print resources[i]
         if resources[i].faulty or n < opts.redundant_resources:
             failed += " -f%s=%s" % (n, i)
             n += 1
