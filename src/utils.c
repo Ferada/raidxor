@@ -7,8 +7,10 @@ static const char * raidxor_cache_line_status(cache_line_t *line)
 	switch (line->status) {
 	case CACHE_LINE_CLEAN:
 		return "CACHE_LINE_CLEAN";
+	case CACHE_LINE_READYING:
+		return "CACHE_LINE_READYING";
 	case CACHE_LINE_READY:
-		return "CACHE_LINE_CLEAN";
+		return "CACHE_LINE_READY";
 	case CACHE_LINE_LOAD_ME:
 		return "CACHE_LINE_LOAD_ME";
 	case CACHE_LINE_LOADING:
@@ -420,7 +422,7 @@ static void raidxor_copy_bio_to_cache(cache_t *cache, unsigned int n_line,
 		bio_mapped = __bio_kmap_atomic(bio, i, KM_USER0);
 		page_mapped = kmap(line->buffers[j]);
 
-		/* printk(KERN_EMERG "copying %lu bytes for index %d, buffer %d\n", PAGE_SIZE, i, j); */
+		printk(KERN_EMERG "copying %lu bytes for index %d, buffer %d\n", PAGE_SIZE, i, j);
 
 		memmove(page_mapped, bio_mapped, PAGE_SIZE);
 
@@ -428,6 +430,8 @@ static void raidxor_copy_bio_to_cache(cache_t *cache, unsigned int n_line,
 		__bio_kunmap_atomic(bio_mapped, KM_USER0);
 		++j;
 	}
+
+	CHECK_LINE;
 }
 
 /**
@@ -468,7 +472,7 @@ static void raidxor_copy_bio_from_cache(cache_t *cache, unsigned int n_line,
 		bio_mapped = __bio_kmap_atomic(bio, i, KM_USER0);
 		page_mapped = kmap(line->buffers[j]);
 
-		/* printk(KERN_EMERG "copying %lu bytes for index %d, buffer %d\n", PAGE_SIZE, i, j); */
+		printk(KERN_EMERG "copying %lu bytes for index %d, buffer %d\n", PAGE_SIZE, i, j);
 
 		memmove(bio_mapped, page_mapped, PAGE_SIZE);
 
@@ -476,6 +480,8 @@ static void raidxor_copy_bio_from_cache(cache_t *cache, unsigned int n_line,
 		__bio_kunmap_atomic(bio_mapped, KM_USER0);
 		++j;
 	}
+
+	CHECK_LINE;
 }
 
 static void raidxor_copy_bio(struct bio *bioto, struct bio *biofrom)
@@ -632,14 +638,12 @@ static void raidxor_wait_for_empty_line(raidxor_conf_t *conf)
 	/* signal raidxord to free some lines */
 	++conf->cache->n_waiting;
 
-	spin_unlock_irq(&conf->device_lock);
-	raidxor_wakeup_thread(conf);
+//	raidxor_wakeup_thread(conf);
 
 	#ifdef RAIDXOR_DEBUG
 	printk(KERN_EMERG "WAITING\n");
 	#endif
 
-	spin_lock_irq(&conf->device_lock);
 	wait_event_lock_irq(conf->cache->wait_for_line,
 			    raidxor_cache_empty_lines(conf->cache) > 0 ||
 			    test_bit(CONF_STOPPING, &conf->flags),
@@ -663,9 +667,7 @@ static void raidxor_wait_for_writeback(raidxor_conf_t *conf)
 
 	/* signal raidxord to free all lines */
 	conf->cache->n_waiting = conf->cache->n_lines;
-/*	UNLOCKCONF(conf);*/
-	raidxor_wakeup_thread(conf);
-/*	LOCKCONF(conf);*/
+//	raidxor_wakeup_thread(conf);
 
 #ifdef RAIDXOR_DEBUG
 	printk(KERN_EMERG "active_lines = %d, n_waiting = %d\n",
@@ -693,9 +695,7 @@ static void raidxor_signal_empty_line(raidxor_conf_t *conf)
 {
 	CHECK_ARG_RET(conf);
 
-/*	UNLOCKCONF(conf);*/
 	wake_up(&conf->cache->wait_for_line);
-/*	LOCKCONF(conf);*/
 }
 
 #if 0

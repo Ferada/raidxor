@@ -4,6 +4,7 @@
 #define _RAIDXOR_H
 
 #include <linux/raid/md.h>
+#include <asm/bug.h>
 
 /* new raid level e.g. for mdadm */
 #define LEVEL_XOR (-10)
@@ -60,14 +61,15 @@ struct cache {
 };
 
 #define CACHE_LINE_CLEAN     0
-#define CACHE_LINE_READY     1
-#define CACHE_LINE_LOAD_ME   2
-#define CACHE_LINE_LOADING   3
-#define CACHE_LINE_UPTODATE  4
-#define CACHE_LINE_DIRTY     5
-#define CACHE_LINE_WRITEBACK 6
-#define CACHE_LINE_FAULTY    7
-#define CACHE_LINE_RECOVERY  8
+#define CACHE_LINE_READYING  1
+#define CACHE_LINE_READY     2
+#define CACHE_LINE_LOAD_ME   3
+#define CACHE_LINE_LOADING   4
+#define CACHE_LINE_UPTODATE  5
+#define CACHE_LINE_DIRTY     6
+#define CACHE_LINE_WRITEBACK 7
+#define CACHE_LINE_FAULTY    8
+#define CACHE_LINE_RECOVERY  9
 
 static cache_t * raidxor_alloc_cache(unsigned int n_lines,
 				     unsigned int n_buffers,
@@ -331,6 +333,9 @@ struct raidxor_conf {
 
 #if 1
 //#ifdef RAIDXOR_DEBUG
+		//dump_stack();
+		//BUG();
+		//__check_bug = *((unsigned int *) 0x0);
 #define WITHLOCKCONF(conf,flags,block) \
 	{ \
 	unsigned int __check_bug = spin_is_locked(&conf->device_lock); \
