@@ -331,7 +331,7 @@ struct raidxor_conf {
 	spin_unlock_irqrestore(&conf->device_lock, flags)
 #endif
 
-#if 1
+#if 0
 //#ifdef RAIDXOR_DEBUG
 		//dump_stack();
 		//BUG();
@@ -340,18 +340,25 @@ struct raidxor_conf {
 	{ \
 	unsigned int __check_bug = spin_is_locked(&conf->device_lock); \
 	if (__check_bug) { \
-		printk(KERN_EMERG "%s:%u:raidxor: recursive lock\n", __FILE__, __LINE__); \
-		dump_stack(); \
+		printk(KERN_EMERG "%s:%i:%i:raidxor: recursive lock\n", __FILE__, __LINE__, smp_processor_id()); \
+		__check_bug = *((unsigned int *) 0x0); \
 	} \
 	else LOCKCONF(conf, flags); \
 	do block while(0); \
 	if (!__check_bug) UNLOCKCONF(conf, flags); \
+	}
+#define CHECK_SPIN(conf) \
+	{ \
+	unsigned int __check_bug = spin_is_locked(&conf->device_lock); \
+	if (__check_bug) \
+		printk(KERN_EMERG "%s:%i:%i:raidxor spin is still locked\n", __FILE__, __LINE__, smp_processor_id()); \
 	}
 #else
 #define WITHLOCKCONF(conf,flags,block) \
 	LOCKCONF(conf, flags); \
 	do block while(0); \
 	UNLOCKCONF(conf, flags);
+#define CHECK_SPIN
 #endif
 
 /* #define RAIDXOR_CONF_STATUS_NORMAL 0 */
@@ -387,8 +394,8 @@ struct raidxor_bio {
 #ifdef RAIDXOR_DEBUG
 #define CHECK_HELPER(test,block,message) \
 	if (!(test)) { \
-		printk(CHECK_LEVEL "%s:%u:raidxor: check failed: %s\n", \
-		       __FILE__, __LINE__, message); \
+		printk(CHECK_LEVEL "%s:%i:%i:raidxor: check failed: %s\n", \
+		       __FILE__, __LINE__, smp_processor_id(), message); \
 		block; \
 	}
 #else
@@ -444,17 +451,23 @@ struct raidxor_bio {
 
 #ifdef RAIDXOR_DEBUG
 #define CHECK_BUG(message) \
-	printk(CHECK_LEVEL "raidxor: BUG at %s:%i: %s\n", \
-	       __FILE__, __LINE__, message)
+	printk(CHECK_LEVEL "raidxor: BUG at %s:%i:%i: %s\n", \
+	       __FILE__, __LINE__, smp_processor_id(), message)
 
 #define CHECK_LINE \
-	printk(CHECK_LEVEL "raidxor: %s:%i\n", __FILE__, __LINE__)
+	printk(CHECK_LEVEL "raidxor: %s:%i:%i\n", __FILE__, __LINE__, smp_processor_id())
 #define CHECK_FUN(fun) \
-	printk(CHECK_LEVEL "raidxor: %s:%i: %s\n", __FILE__, __LINE__, #fun)
+	printk(CHECK_LEVEL "raidxor: %s:%i:%i: %s\n", __FILE__, __LINE__, smp_processor_id(), #fun)
+#define CHECK_MAP \
+	printk(CHECK_LEVEL "raidxor: %s:%i:%i: kmap\n", __FILE__, __LINE__, smp_processor_id());
+#define CHECK_MALLOC \
+	printk(CHECK_LEVEL "raidxor: %s:%i:%i: malloc\n", __FILE__, __LINE__, smp_processor_id());
 #else
 #define CHECK_BUG(message)
 #define CHECK_LINE
 #define CHECK_FUN(fun)
+#define CHECK_MAP
+#define CHECK_MALLOC
 #define CHECK_STRIPE(conf)
 #endif
 
