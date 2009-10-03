@@ -417,6 +417,8 @@ if [[ ! $? -eq 0 ]]; then exit; fi
     out.write (
 """
 echo %s > /sys/block/%s/md/units_per_resource
+
+rm tmp
 """ % (len (resources[0].units), block_name (raid_device)))
 
 def parse_faulty ():
