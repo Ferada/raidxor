@@ -354,7 +354,7 @@ static void raidxor_safe_free_conf(raidxor_conf_t *conf) {
 
 	CHECK_ARG_RET(conf);
 
-	conf->configured = 0;
+	set_bit(CONF_INCOMPLETE, &conf->flags);
 
 	if (conf->resources != NULL) {
 		for (i = 0; i < conf->n_resources; ++i)

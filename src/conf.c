@@ -11,6 +11,7 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 	disk_info_t *unit;
 	unsigned int i, j;
 	char buffer[32];
+	unsigned long flags;
 	mddev_t *mddev = conf->mddev;
 
 	if (!conf || !mddev) {
@@ -108,7 +109,10 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 		(unsigned long long) mddev->array_sectors / 2);
 
 	conf->resources = resources;
-	conf->configured = 1;
+
+	WITHLOCKCONF(conf, flags, {
+	clear_bit(CONF_INCOMPLETE, &conf->flags);
+	});
 
 	return;
 out_free_resources:

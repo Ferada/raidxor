@@ -968,7 +968,7 @@ static void raidxord(mddev_t *mddev)
 	CHECK_PLAIN_RET(conf);
 
 	WITHLOCKCONF(conf, flags, {
-	done = !conf->configured;
+	done = !test_bit(CONF_INCOMPLETE, &conf->flags);
 	});
 	if (done) return;
 
@@ -1066,7 +1066,7 @@ static int raidxor_run(mddev_t *mddev)
 		goto out;
 	}
 
-	conf->configured = 0;
+	set_bit(CONF_INCOMPLETE, &conf->flags);
 	conf->mddev = mddev;
 	conf->chunk_size = mddev->chunk_size;
 	conf->units_per_resource = 0;
@@ -1141,11 +1141,9 @@ static int raidxor_stop(mddev_t *mddev)
 	unsigned long flags = 0;
 
 	WITHLOCKCONF(conf, flags, {
-//	spin_lock_irq(&conf->device_lock);
 	set_bit(CONF_STOPPING, &conf->flags);
 	raidxor_wait_for_no_active_lines(conf, &flags);
 	raidxor_wait_for_writeback(conf, &flags);
-//	spin_unlock_irq(&conf->device_lock);
 	});
 
 	md_unregister_thread(mddev->thread);
@@ -1240,7 +1238,8 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 #undef CHECK_JUMP_LABEL
 #define CHECK_JUMP_LABEL out_unlock
 
-	if (test_bit(CONF_STOPPING, &conf->flags))
+	if (test_bit(CONF_STOPPING, &conf->flags) ||
+	    test_bit(CONF_ERROR, &conf->flags))
 		goto out_unlock;
 
 	CHECK_PLAIN(!raidxor_check_bio_size_and_layout(conf, bio));
@@ -1283,11 +1282,6 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 
 	/* look for matching line or otherwise available */
 	if (!raidxor_cache_find_line(cache, aligned_sector, &line)) {
-		/* if it's not in the cache and the stripe is flagged as error,
-		   abort early, as we can do nothing */
-		if (test_bit(CONF_ERROR, &conf->flags))
-			goto out_unlock;
-
 		/* printk(KERN_EMERG "waiting for empty line\n"); */
 
 		raidxor_wait_for_empty_line(conf, &flags);

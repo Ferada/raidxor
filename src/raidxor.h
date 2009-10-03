@@ -264,8 +264,6 @@ struct raidxor_conf {
 
 	cache_t *cache;
 
-	unsigned int configured;
-
 	unsigned int units_per_resource;
 	unsigned int n_resources;
 	resource_t **resources;
@@ -320,7 +318,6 @@ struct raidxor_conf {
 #define CHECK_SPIN
 #endif
 
-/* #define RAIDXOR_CONF_STATUS_NORMAL 0 */
 #define CONF_INCOMPLETE 1
 #define CONF_FAULTY 2
 #define CONF_ERROR 4
