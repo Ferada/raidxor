@@ -8,9 +8,8 @@
  */
 static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 	resource_t **resources;
-	stripe_t **stripes;
 	disk_info_t *unit;
-	unsigned int i, j, old_data_units = 0;
+	unsigned int i, j;
 	char buffer[32];
 	mddev_t *mddev = conf->mddev;
 
@@ -20,22 +19,21 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 		return;
 	}
 
-	if (conf->resources_per_stripe <= 0 || conf->units_per_resource <= 0) {
-		printk(KERN_EMERG "raidxor: need resources per stripe or "
-		       "units per resource: %u or %u\n",
-		       conf->resources_per_stripe, conf->units_per_resource);
-		goto out;
-	}
-
-	if (conf->n_units % (conf->resources_per_stripe *
-			     conf->units_per_resource) != 0) {
-		printk(KERN_EMERG
-		       "raidxor: parameters don't match %u %% (%u * %u) != 0\n",
-		       conf->n_units, conf->resources_per_stripe,
+	if (conf->units_per_resource <= 0) {
+		printk(KERN_EMERG "raidxor: need units per resource: %u\n",
 		       conf->units_per_resource);
 		goto out;
 	}
 
+	if (conf->n_units % conf->units_per_resource != 0) {
+		printk(KERN_EMERG
+		       "raidxor: parameters don't match %u %% %u != 0\n",
+		       conf->n_units,
+		       conf->units_per_resource);
+		goto out;
+	}
+
+	conf->n_data_units = 0;
 	for (i = 0; i < conf->n_units; ++i) {
 		if (conf->units[i].redundant == -1) {
 			printk(KERN_EMERG
@@ -43,6 +41,9 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 			       i, bdevname(conf->units[i].rdev->bdev, buffer));
 			goto out;
 		}
+
+		if (conf->units[i].redundant == 0)
+			++conf->n_data_units;
 	}
 
 	printk(KERN_EMERG "raidxor: got enough information, building raid\n");
@@ -62,22 +63,6 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 			goto out_free_resources;
 	}
 
-	conf->n_stripes = conf->n_units /
-		(conf->resources_per_stripe * conf->units_per_resource);
-
-	stripes = kzalloc(sizeof(stripe_t *) * conf->n_stripes, GFP_KERNEL);
-	if (!stripes)
-		goto out_free_resources;
-
-	for (i = 0; i < conf->n_stripes; ++i) {
-		stripes[i] = kzalloc(sizeof(stripe_t) +
-				     (sizeof(disk_info_t *) *
-				      conf->resources_per_stripe *
-				      conf->units_per_resource), GFP_KERNEL);
-		if (!stripes[i])
-			goto out_free_stripes;
-	}
-
 	for (i = 0; i < conf->n_resources; ++i) {
 		resources[i]->n_units = conf->units_per_resource;
 		for (j = 0; j < conf->units_per_resource; ++j) {
@@ -88,84 +73,44 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 		}
 	}
 
-	printk(KERN_EMERG "now calculating stripes and sizes\n");
-
-	for (i = 0; i < conf->n_stripes; ++i) {
-		printk(KERN_EMERG "direct: stripes[%u] %p\n", i, stripes[i]);
-		stripes[i]->n_units = conf->resources_per_stripe *
-			conf->units_per_resource;
-		printk(KERN_EMERG "using %d units per stripe\n", stripes[i]->n_units);
-
-		for (j = 0; j < stripes[i]->n_units; ++j) {
-			printk(KERN_EMERG "using unit %u for stripe %u, index %u\n",
-			       i * conf->units_per_resource * conf->resources_per_stripe + j, i, j);
-			unit = &conf->units[i * conf->units_per_resource * conf->resources_per_stripe + j];
-
-			unit->stripe = stripes[i];
-
-			if (unit->redundant == 0)
-				++stripes[i]->n_data_units;
-			stripes[i]->units[j] = unit;
-		}
-
-		if (old_data_units == 0) {
-			old_data_units = stripes[i]->n_data_units;
-		}
-		else if (old_data_units != stripes[i]->n_data_units) {
-			printk(KERN_EMERG "number of data units on two stripes"
-			       " are different: %u on stripe %d where we"
-			       " assumed %u\n",
-			       i, stripes[i]->n_data_units, old_data_units);
-			goto out_free_stripes;
-		}
-
-		stripes[i]->size = stripes[i]->n_data_units * mddev->size * 2;
-	}
 
 	/* allocate the cache with a default of 10 lines;
 	   TODO: could be a driver option, or allow for shrinking/growing ... */
 	/* one chunk is CHUNK_SIZE / PAGE_SIZE pages long, eqv. >> PAGE_SHIFT */
 	conf->cache = raidxor_alloc_cache(number_of_cache_lines,
-					  stripes[0]->n_data_units,
-					  stripes[0]->n_units -
-					  stripes[0]->n_data_units,
+					  conf->n_data_units,
+					  conf->n_units - conf->n_data_units,
 					  conf->chunk_size >> PAGE_SHIFT);
 	if (!conf->cache)
-		goto out_free_stripes;
+		goto out_free_resources;
 	conf->cache->conf = conf;
 
 	/* now a request is between 4096 and N_DATA_UNITS * CHUNK_SIZE bytes long */
 	printk(KERN_EMERG "and max sectors to %lu\n",
-	       (conf->chunk_size >> 9) * stripes[0]->n_data_units);
+	       (conf->chunk_size >> 9) * conf->n_data_units);
 	blk_queue_max_sectors(mddev->queue,
-			      (conf->chunk_size >> 9) * stripes[0]->n_data_units);
+			      (conf->chunk_size >> 9) * conf->n_data_units);
 	blk_queue_segment_boundary(mddev->queue,
 				   (conf->chunk_size >> 1) *
-				   stripes[0]->n_data_units - 1);
+				   conf->n_data_units - 1);
 
 	printk(KERN_EMERG "setting device size\n");
 
 	/* since all stripes are equally long */
-	mddev->array_sectors = stripes[0]->size * conf->n_stripes;
+	mddev->array_sectors = conf->n_data_units * mddev->size * 2;
 	set_capacity(mddev->gendisk, mddev->array_sectors);
 
-	printk (KERN_EMERG "raidxor: array_sectors is %llu * %u = "
+	 printk (KERN_EMERG "raidxor: array_sectors is %u * %llu= "
 		"%llu blocks, %llu sectors\n",
-		(unsigned long long) stripes[0]->size,
-		(unsigned int) conf->n_stripes,
+		(unsigned int) conf->n_data_units,
+		(unsigned long long) mddev->size * 2,
 		(unsigned long long) mddev->array_sectors,
 		(unsigned long long) mddev->array_sectors / 2);
 
-	conf->stripe_size = stripes[0]->size;
 	conf->resources = resources;
-	conf->stripes = stripes;
 	conf->configured = 1;
 
 	return;
-out_free_stripes:
-	for (i = 0; i < conf->n_stripes; ++i)
-		kfree(stripes[i]);
-	kfree(stripes);
 out_free_resources:
 	for (i = 0; i < conf->n_resources; ++i)
 		kfree(resources[i]);
@@ -204,43 +149,6 @@ raidxor_store_units_per_resource(mddev_t *mddev, const char *page, size_t len)
 	WITHLOCKCONF(conf, flags, {
 	raidxor_safe_free_conf(conf);
 	conf->units_per_resource = new;
-	});
-
-	raidxor_try_configure_raid(conf);
-
-	return len;
-}
-
-static ssize_t
-raidxor_show_resources_per_stripe(mddev_t *mddev, char *page)
-{
-	raidxor_conf_t *conf = mddev_to_conf(mddev);
-
-	if (conf)
-		return sprintf(page, "%u\n", conf->resources_per_stripe);
-	else
-		return -ENODEV;
-}
-
-static ssize_t
-raidxor_store_resources_per_stripe(mddev_t *mddev, const char *page, size_t len)
-{
-	unsigned long new, flags = 0;
-	raidxor_conf_t *conf = mddev_to_conf(mddev);
-
-	if (len >= PAGE_SIZE)
-		return -EINVAL;
-	if (!conf)
-		return -ENODEV;
-
-	strict_strtoul(page, 10, &new);
-
-	if (new == 0)
-		return -EINVAL;
-
-	WITHLOCKCONF(conf, flags, {
-	raidxor_safe_free_conf(conf);
-	conf->resources_per_stripe = new;
 	});
 
 	raidxor_try_configure_raid(conf);
@@ -402,11 +310,6 @@ out:
 }
 
 static struct md_sysfs_entry
-raidxor_resources_per_stripe = __ATTR(resources_per_stripe, S_IRUGO | S_IWUSR,
-				     raidxor_show_resources_per_stripe,
-				     raidxor_store_resources_per_stripe);
-
-static struct md_sysfs_entry
 raidxor_units_per_resource = __ATTR(units_per_resource, S_IRUGO | S_IWUSR,
 				    raidxor_show_units_per_resource,
 				    raidxor_store_units_per_resource);
@@ -422,7 +325,6 @@ raidxor_decoding = __ATTR(decoding, S_IRUGO | S_IWUSR,
 			  raidxor_store_decoding);
 
 static struct attribute * raidxor_attrs[] = {
-	(struct attribute *) &raidxor_resources_per_stripe,
 	(struct attribute *) &raidxor_units_per_resource,
 	(struct attribute *) &raidxor_encoding,
 	(struct attribute *) &raidxor_decoding,
@@ -440,11 +342,6 @@ static void raidxor_status(struct seq_file *seq, mddev_t *mddev)
 	raidxor_conf_t *conf = mddev_to_conf(mddev);
 
 	seq_printf(seq, "\n");
-
-	for (i = 0; i < conf->n_stripes; ++i) {
-		seq_printf(seq, "stripe %u with size %llu\n", i,
-			   (unsigned long long) conf->stripes[i]->size);
-	}
 
 	for (i = 0; i < conf->cache->n_lines; ++i) {
 		seq_printf(seq, "line %u: %s at sector %llu\n", i,

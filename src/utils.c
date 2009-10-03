@@ -257,7 +257,7 @@ static void raidxor_cache_drop_line(cache_t *cache, unsigned int line)
 /**
  * raidxor_alloc_cache() - allocates a new cache with buffers
  * @n_lines: number of available lines in the cache
- * @n_buffers: buffers per line (equivalent to the width of a stripe times
+ * @n_buffers: buffers per line (equivalent to the width of the stripe times
                chunk_mult)
  * @n_red_buffers: redundant buffers per line
  * @n_chunk_mult: number of buffers per chunk
@@ -345,7 +345,7 @@ static void raidxor_safe_free_encoding(disk_info_t *unit)
 }
 
 /**
- * raidxor_safe_free_conf() - frees resource and stripe information
+ * raidxor_safe_free_conf() - frees resource information
  *
  * Must be called inside conf lock.
  */
@@ -361,13 +361,6 @@ static void raidxor_safe_free_conf(raidxor_conf_t *conf) {
 			kfree(conf->resources[i]);
 		kfree(conf->resources);
 		conf->resources = NULL;
-	}
-
-	if (conf->stripes != NULL) {
-		for (i = 0; i < conf->n_stripes; ++i)
-			kfree(conf->stripes[i]);
-		kfree(conf->stripes);
-		conf->stripes = NULL;
 	}
 
 	if (conf->cache != NULL) {
@@ -501,28 +494,6 @@ static void raidxor_copy_bio(struct bio *bioto, struct bio *biofrom)
 		kunmap(bvfrom->bv_page);
 		kunmap(bvto->bv_page);
 	}
-}
-
-/**
- * raidxor_sector_to_stripe() - returns the stripe a virtual sector belongs to
- * @newsector: if non-NULL, the sector in the stripe is written here
- */
-static stripe_t * raidxor_sector_to_stripe(raidxor_conf_t *conf, sector_t sector,
-					   sector_t *newsector)
-{
-	stripe_t **stripes = conf->stripes;
-	unsigned long i;
-
-	for (i = 0; i < conf->n_stripes; ++i) {
-		if (sector < stripes[i]->size)
-			break;
-		sector -= stripes[i]->size;
-	}
-
-	if (newsector)
-		*newsector = sector;
-
-	return stripes[i];
 }
 
 /**

@@ -13,49 +13,6 @@ static void raidxor_fill_page(struct page *page, unsigned char value,
 	kunmap(page);
 }
 
-static int raidxor_test_case_sector_to_stripe(void)
-{
-	unsigned int size = (10 * 4096 * 3) >> 9;
-	stripe_t stripes[3] = { { .size = size },
-				{ .size = size },
-				{ .size = size } };
-	stripe_t *pstripes[3] = { &stripes[0], &stripes[1], &stripes[2] };
-	raidxor_conf_t conf = { .chunk_size = 4096, .n_stripes = 3,
-				.stripes = pstripes };
-	sector_t sector;
-	stripe_t *stripe;
-
-	if (&stripes[0] != (stripe = raidxor_sector_to_stripe(&conf, 0, &sector))) {
-		printk(KERN_EMERG "raidxor: sector_to_stripe(0) resulted in %p, %d"
-		       " instead of %p, 0\n", stripe,
-		       (stripe == &stripes[1]) ? 1 : ((stripe == &stripes[2]) ? 2 : -1),
-		       &stripes[0]);
-		return 1;
-	}
-
-	if (sector != 0) {
-		printk(KERN_EMERG "raidxor: sector_to_stripe(0) gave new sector %lu"
-		       " which was assumed to be 0\n", (unsigned long) sector);
-		return 1;
-	}
-
-	if (&stripes[1] != (stripe = raidxor_sector_to_stripe(&conf, 250, &sector))) {
-		printk(KERN_EMERG "raidxor: sector_to_stripe(0) resulted in %p, %d"
-		       " instead of %p, 1\n", stripe,
-		       (stripe == &stripes[1]) ? 1 : ((stripe == &stripes[2]) ? 2 : -1),
-		       &stripes[1]);
-		return 1;
-	}
-
-	if (sector != 10) {
-		printk(KERN_EMERG "raidxor: sector_to_stripe(250) gave new sector %lu"
-		       " which was assumed to be 10\n", (unsigned long) sector);
-		return 1;
-	}
-
-	return 0;
-}
-
 static int raidxor_test_case_xor_combine_encode(void)
 {
 	unsigned long i;
@@ -80,7 +37,6 @@ static int raidxor_test_case_xor_combine_encode(void)
 	unit3.redundant = 1;
 	unit1.encoding = unit2.encoding = NULL;
 	unit1.resource = unit2.resource = NULL;
-	unit1.stripe = unit2.stripe = NULL;
 
 	bio1.bi_bdev = rdev1.bdev = (void *) 0xdeadbeef;
 	bio2.bi_bdev = rdev2.bdev = (void *) 0xcafecafe;
@@ -241,7 +197,6 @@ static int raidxor_test_case_find_bio(void)
 	unit1.redundant = unit2.redundant = 0;
 	unit1.encoding = unit2.encoding = NULL;
 	unit1.resource = unit2.resource = NULL;
-	unit1.stripe = unit2.stripe = NULL;
 
 	bio1.bi_bdev = rdev1.bdev = (void *) 0xdeadbeef;
 	bio2.bi_bdev = rdev2.bdev = (void *) 0xcafecafe;
@@ -384,12 +339,6 @@ static int raidxor_run_test_cases(void)
 	printk(KERN_EMERG "raidxor: running test case xor_combine_encode\n");
 	if (raidxor_test_case_xor_combine_encode()) {
 		printk(KERN_EMERG "raidxor: test case xor_combine_encode failed");
-		return 1;
-	}
-
-	printk(KERN_EMERG "raidxor: running test case sector_to_stripe\n");
-	if (raidxor_test_case_sector_to_stripe()) {
-		printk(KERN_EMERG "raidxor: test case sector_to_stripe failed");
 		return 1;
 	}
 

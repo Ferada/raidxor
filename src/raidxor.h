@@ -14,7 +14,6 @@ typedef struct encoding encoding_t;
 typedef struct decoding decoding_t;
 typedef struct raidxor_bio raidxor_bio_t;
 typedef struct raidxor_conf raidxor_conf_t;
-typedef struct stripe stripe_t;
 typedef struct raidxor_resource resource_t;
 typedef struct cache cache_t;
 typedef struct cache_line cache_line_t;
@@ -186,7 +185,6 @@ struct disk_info {
 	decoding_t *decoding;
 
 	resource_t *resource;
-	stripe_t *stripe;
 };
 
 
@@ -239,39 +237,6 @@ struct raidxor_resource {
 
 
 /**
- * struct stripe - one stripe over multiple resources and units
- * @size: size in blocks, that is, 512 bytes
- * @n_units: the number of contained units
- * @units: the actual units
- *
- * In the rectangular raid layout, this is a column of units.
- *
- * This is the correct level for en- and decoding.
- *
- * units = [u1 r1 r2 u2 u3] order as in parameter list.
- */
-struct stripe {
-	unsigned long flags;
-	sector_t size;
-	unsigned int n_data_units;
-	unsigned int n_units;
-	disk_info_t *units[0];
-};
-
-#define STRIPE_FAULTY 1
-#define STRIPE_ERROR 2
-
-/*
-  STRIPE_FAULTY: we have a correctable error
-  STRIPE_ERROR: no chance of recovery
- */
-
-static stripe_t * raidxor_sector_to_stripe(raidxor_conf_t *conf,
-					   sector_t sector,
-					   sector_t *newsector);
-
-
-/**
  * struct raidxor_private_data_s - private data per mddev
  * @mddev: the mddev we are associated to
  * @device_lock: lock for exclusive access to this raid
@@ -296,21 +261,16 @@ struct raidxor_conf {
 	unsigned long flags;
 
 	unsigned long chunk_size;
-	sector_t stripe_size;
 
 	cache_t *cache;
 
 	unsigned int configured;
 
-	unsigned int resources_per_stripe;
 	unsigned int units_per_resource;
 	unsigned int n_resources;
 	resource_t **resources;
 
-	unsigned int n_stripes;
-	stripe_t **stripes;
-
-	unsigned int n_units;
+	unsigned int n_units, n_data_units;
 	disk_info_t units[0];
 };
 
@@ -363,7 +323,8 @@ struct raidxor_conf {
 /* #define RAIDXOR_CONF_STATUS_NORMAL 0 */
 #define CONF_INCOMPLETE 1
 #define CONF_FAULTY 2
-#define CONF_STOPPING 4
+#define CONF_ERROR 4
+#define CONF_STOPPING 8
 
 /**
  * struct raidxor_bio - private information for bio transfers from and to stripes
@@ -381,8 +342,6 @@ struct raidxor_bio {
 	cache_t *cache;
 	unsigned int line;
 	unsigned int faulty;
-
-	stripe_t *stripe;
 
 	unsigned int n_bios;
 	struct bio *bios[0];
