@@ -54,10 +54,9 @@ static int raidxor_cache_make_ready(cache_t *cache, unsigned int n_line)
 {
 #undef CHECK_RETURN_VALUE
 #define CHECK_RETURN_VALUE 1
-	unsigned int i, nbuffers;
+	unsigned int i;
 	cache_line_t *line;
 	unsigned long flags;
-	struct page **buffers;
 	raidxor_conf_t *conf;
 
  	CHECK_FUN(raidxor_cache_make_ready);
@@ -94,6 +93,9 @@ static int raidxor_cache_make_ready(cache_t *cache, unsigned int n_line)
 
 	/* printk(KERN_EMERG "cache->n_buffers == %u, cache->n_red_buffers == %u\n",
 	       cache->n_buffers, cache->n_red_buffers); */
+
+	if (raidxor_cache_line_ensure_temps(cache, n_line))
+		goto out_free_pages;
 
 	for (i = 0; i < (cache->n_buffers + cache->n_red_buffers) * cache->n_chunk_mult; ++i) {
 		/* printk(KERN_EMERG "line->buffers[%u] at %p, before %p\n", i, &line->buffers[i], line->buffers[i]); */
@@ -186,16 +188,16 @@ static unsigned int raidxor_bio_index(raidxor_conf_t *conf,
 	return 0;
 }
 
-static void raidxor_cache_commit_bio(cache_t *cache, unsigned int n)
+static void raidxor_cache_commit_bio(cache_t *cache, unsigned int n_line)
 {
 	unsigned int i;
 	raidxor_bio_t *rxbio;
 
 	CHECK_ARG_RET(cache);
-	CHECK_PLAIN_RET(n < cache->n_lines);
-	CHECK_PLAIN_RET(cache->lines[n]);
+	CHECK_PLAIN_RET(n_line < cache->n_lines);
+	CHECK_PLAIN_RET(cache->lines[n_line]);
 
-	rxbio = cache->lines[n]->rxbio;
+	rxbio = cache->lines[n_line]->rxbio;
 	CHECK_PLAIN_RET(rxbio);
 
 	for (i = 0; i < rxbio->n_bios; ++i)
@@ -206,7 +208,7 @@ static void raidxor_cache_commit_bio(cache_t *cache, unsigned int n)
 static void raidxor_end_load_line(struct bio *bio, int error);
 static void raidxor_end_writeback_line(struct bio *bio, int error);
 
-static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
+static int raidxor_cache_load_line(cache_t *cache, unsigned int n_line)
 {
 #undef CHECK_JUMP_LABEL
 #define CHECK_JUMP_LABEL out
@@ -217,17 +219,16 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 	struct bio *bio;
 	unsigned int i, j, k, l, n_chunk_mult;
 	unsigned long flags = 0;
-	char buffer[BDEVNAME_SIZE];
 
  	CHECK_FUN(raidxor_cache_load_line);
 
 	CHECK_ARG(cache);
-	CHECK_PLAIN(n < cache->n_lines);
+	CHECK_PLAIN(n_line < cache->n_lines);
 
 	conf = cache->conf;
 	CHECK_PLAIN(conf);
 
-	line = cache->lines[n];
+	line = cache->lines[n_line];
 
 	WITHLOCKCONF(conf, flags, {
 	if (line->status == CACHE_LINE_LOAD_ME)
@@ -250,7 +251,7 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 #define CHECK_JUMP_LABEL out_free_bio
 
 	rxbio->cache = cache;
-	rxbio->line = n;
+	rxbio->line = n_line;
 	rxbio->remaining = rxbio->n_bios;
 
 	line->rxbio = rxbio;
@@ -313,7 +314,7 @@ out: __attribute__((unused))
 	return 1;
 }
 
-static int raidxor_cache_writeback_line(cache_t *cache, unsigned int n)
+static int raidxor_cache_writeback_line(cache_t *cache, unsigned int n_line)
 {
 #undef CHECK_JUMP_LABEL
 #define CHECK_JUMP_LABEL out
@@ -321,16 +322,15 @@ static int raidxor_cache_writeback_line(cache_t *cache, unsigned int n)
 	raidxor_bio_t *rxbio;
 	unsigned int i, j, k, l, n_chunk_mult;
 	struct bio *bio;
-	char buffer[BDEVNAME_SIZE];
 	unsigned long flags = 0;
 	raidxor_conf_t *conf = cache->conf;
 
  	CHECK_FUN(raidxor_cache_writeback_line);
 
 	CHECK_ARG(cache);
-	CHECK_PLAIN(n < cache->n_lines);
+	CHECK_PLAIN(n_line < cache->n_lines);
 
-	line = cache->lines[n];
+	line = cache->lines[n_line];
 
 	WITHLOCKCONF(conf, flags, {
 	if (line->status == CACHE_LINE_DIRTY)
@@ -347,7 +347,7 @@ static int raidxor_cache_writeback_line(cache_t *cache, unsigned int n)
 #define CHECK_JUMP_LABEL out_free_bio
 
 	rxbio->cache = cache;
-	rxbio->line = n;
+	rxbio->line = n_line;
 	rxbio->remaining = rxbio->n_bios;
 
 	line->rxbio = rxbio;
@@ -392,10 +392,16 @@ static int raidxor_cache_writeback_line(cache_t *cache, unsigned int n)
 				rxbio->faulty = 1;
 		}
 	}
+
+	for (i = 0; i < conf->n_enc_temps; ++i) {
+		/*if (raidxor_xor_combine_encode_temporary(cache, line))
+		  goto out_free_bio;*/
+	}
 	
 	for (i = 0; i < rxbio->n_bios; ++i) {
 		if (!conf->units[i].redundant) continue;
-		if (raidxor_xor_combine_encode(rxbio->bios[i], rxbio,
+		if (raidxor_xor_combine_encode(cache, n_line,
+					       rxbio->bios[i], rxbio,
 					       conf->units[i].encoding))
 			goto out_free_bio;
 	}
@@ -534,52 +540,59 @@ static int raidxor_check_same_size_and_layout(struct bio *x, struct bio *y)
 	return 0;
 }
 
-static int raidxor_xor_combine(struct bio *bioto, raidxor_bio_t *rxbio,
-			       unsigned int n_units, disk_info_t *units[0])
+static int raidxor_xor_combine(cache_t *cache, unsigned int n_line,
+			       struct bio *bioto,
+			       raidxor_bio_t *rxbio,
+			       unsigned int n_units, coding_t *units[0]) 
 {
 #undef CHECK_JUMP_LABEL
 #define CHECK_JUMP_LABEL out
 	/* since we have control over bioto and rxbio, every bio has size
 	   M * CHUNK_SIZE with CHUNK_SIZE = N * PAGE_SIZE */
-	unsigned int i, j, k, nsrcs;
+	unsigned int i, j, k, t, u, nsrcs;
 	unsigned int err __attribute__((unused));
 	struct bio *biofrom;
 	struct bio_vec *bvto;
 	unsigned char *tomapped;
 	const unsigned int nblocks = 5;
-	struct bio_vec *vecs[nblocks];
+	struct page *pages[nblocks];
 	void *srcs[nblocks];
 	struct bio *bios[nblocks];
 
 	CHECK_FUN(raidxor_xor_combine);
 
 	/* copying first bio buffers */
-	biofrom = raidxor_find_bio(rxbio, units[0]);
+	biofrom = raidxor_find_bio(rxbio, units[0]->disk);
 	raidxor_copy_bio(bioto, biofrom);
 
 	/* XOR every NBLOCKS bio_vecs, repeating for all bio_vec of the bios */
 	i = 1;
+	t = 0;
 	while (i < n_units) {
 		for (j = 0; j < bioto->bi_vcnt; ++j) {
 			bvto = bio_iovec_idx(bioto, j);
-			CHECK_MAP;
 			tomapped = (unsigned char *) kmap(bvto->bv_page);
 
-			for (k = i, nsrcs = 0; k < n_units && k < (i + nblocks); ++k, ++nsrcs) {
-				if (j == 0) bios[nsrcs] = raidxor_find_bio(rxbio, units[k]);
-				vecs[nsrcs] = bio_iovec_idx(bios[nsrcs], j);
-
-				CHECK_MAP;
-				srcs[nsrcs] = kmap(vecs[nsrcs]->bv_page);
+			for (k = i, u = t, nsrcs = 0; k < n_units && k < (i + nblocks); ++k, ++nsrcs) {
+				if (units[k]->temporary && j == 0) {
+					pages[nsrcs] = cache->lines[n_line]->temp_buffers[cache->n_chunk_mult * u + j];
+					++u;
+				}
+				else {
+					if (j == 0) bios[nsrcs] = raidxor_find_bio(rxbio, units[k]->disk);
+					pages[nsrcs] = bio_iovec_idx(bios[nsrcs], j)->bv_page;
+				}
+				srcs[nsrcs] = kmap(pages[nsrcs]);
 			}
 
 			xor_blocks(nsrcs, PAGE_SIZE, tomapped, srcs);
 
 			for (k = 0; k < nsrcs; ++k)
-				kunmap(vecs[k]->bv_page);
+				kunmap(pages[k]);
 			kunmap(bvto->bv_page);
 		}
 		i += nsrcs;
+		t = u;
 	}
 
 	return 0;
@@ -587,14 +600,16 @@ out:
 	return 1;
 }
 
-static int raidxor_xor_combine_decode(struct bio *bioto, raidxor_bio_t *rxbio,
+static int raidxor_xor_combine_decode(cache_t *cache, unsigned int n_line,
+				      struct bio *bioto,
+				      raidxor_bio_t *rxbio,
 				      decoding_t *decoding)
 {
 #undef CHECK_JUMP_LABEL
 #define CHECK_JUMP_LABEL out
 	CHECK_ARGS3(bioto, rxbio, decoding);
 
-	return raidxor_xor_combine(bioto, rxbio, decoding->n_units, decoding->units);
+	return raidxor_xor_combine(cache, n_line, bioto, rxbio, decoding->n_units, decoding->units);
 out:
 	return 1;
 }
@@ -607,14 +622,16 @@ out:
  *
  * Returns 1 on error (bioto still might be touched in this case).
  */
-static int raidxor_xor_combine_encode(struct bio *bioto, raidxor_bio_t *rxbio,
+static int raidxor_xor_combine_encode(cache_t *cache, unsigned int n_line,
+				      struct bio *bioto,
+				      raidxor_bio_t *rxbio,
 				      encoding_t *encoding)
 {
 #undef CHECK_JUMP_LABEL
 #define CHECK_JUMP_LABEL out
 	CHECK_ARGS3(bioto, rxbio, encoding);
 
-	return raidxor_xor_combine(bioto, rxbio, encoding->n_units, encoding->units);
+	return raidxor_xor_combine(cache, n_line, bioto, rxbio, encoding->n_units, encoding->units);
 out:
 	return 1;
 }
@@ -657,7 +674,8 @@ static void raidxor_cache_recover(cache_t *cache, unsigned int n_line)
 	/* decoding using direct style */
 	for (i = 0; i < rxbio->n_bios; ++i) {
 		if (test_bit(Faulty, &conf->units[i].rdev->flags) &&
-		    raidxor_xor_combine_decode(rxbio->bios[i], rxbio,
+		    raidxor_xor_combine_decode(cache, n_line,
+					       rxbio->bios[i], rxbio,
 					       conf->units[i].decoding))
 			goto out_free_rxbio;
 	}

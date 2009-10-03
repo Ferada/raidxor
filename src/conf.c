@@ -101,7 +101,7 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 	mddev->array_sectors = conf->n_data_units * mddev->size * 2;
 	set_capacity(mddev->gendisk, mddev->array_sectors);
 
-	 printk (KERN_EMERG "raidxor: array_sectors is %u * %llu= "
+	printk (KERN_EMERG "raidxor: array_sectors is %u * %llu= "
 		"%llu blocks, %llu sectors\n",
 		(unsigned int) conf->n_data_units,
 		(unsigned long long) mddev->size * 2,
@@ -209,7 +209,7 @@ raidxor_store_decoding(mddev_t *mddev, const char *page, size_t len)
 			if (red >= conf->n_units)
 				goto out_free_decoding;
 
-			decoding->units[i] = &conf->units[red];
+			decoding->units[i]->disk = &conf->units[red];
 		}
 
 		WITHLOCKCONF(conf, flags, {
@@ -237,7 +237,7 @@ static ssize_t
 raidxor_store_encoding(mddev_t *mddev, const char *page, size_t len)
 {
 	raidxor_conf_t *conf = mddev_to_conf(mddev);
-	unsigned char index, redundant, length, i, red;
+	unsigned char index, redundant, length, i, red, ntemps, temp;
 	encoding_t *encoding;
 	size_t oldlen = len;
 	unsigned long flags = 0;
@@ -247,24 +247,35 @@ raidxor_store_encoding(mddev_t *mddev, const char *page, size_t len)
 	if (!conf)
 		return -ENODEV;
 
+	ntemps = *page++;
+	--len;
+
+	if (raidxor_ensure_enc_temps(conf, ntemps))
+		goto out;
+
 	for (; len >= 2;) {
 		index = *page++;
 		--len;
 
-		if (index >= conf->n_units) {
-			printk(KERN_INFO "index out of bounds %u >= %u\n", index, conf->n_units);
-			goto out;
-		}
-
 		redundant = *page++;
 		--len;
 
-		if (redundant != 0 && redundant != 1) {
-			printk(KERN_INFO "redundant != (0 | 1) == %u\n", redundant);
+		if (redundant > 2) {
+			printk(KERN_INFO "redundant != (0 | 1 | 2) == %u\n", redundant);
 			return -EINVAL;
 		}
 
-		conf->units[index].redundant = redundant;
+		if (redundant != 2 && index >= conf->n_units) {
+			printk(KERN_INFO "index out of bounds %u >= %u\n", index, conf->n_units);
+			goto out;
+		}
+		else if (redundant == 2 && index >= conf->n_enc_temps) {
+			printk(KERN_INFO "index out of bounds %u >= %u\n", index, conf->n_enc_temps);
+			goto out;
+		}
+
+		if (redundant != 2)
+			conf->units[index].redundant = redundant;
 
 		if (redundant == 0) {
 			printk(KERN_INFO "read non-redundant unit info\n");
@@ -281,7 +292,7 @@ raidxor_store_encoding(mddev_t *mddev, const char *page, size_t len)
 			goto out_reset;
 
 		encoding = kzalloc(sizeof(encoding_t) +
-				   sizeof(disk_info_t *) * length, GFP_NOIO);
+				   sizeof(coding_t *) * length, GFP_NOIO);
 		if (!encoding)
 			goto out_reset;
 		encoding->n_units = length;
@@ -290,15 +301,34 @@ raidxor_store_encoding(mddev_t *mddev, const char *page, size_t len)
 			red = *page++;
 			--len;
 
-			if (red >= conf->n_units)
-				goto out_free_encoding;
+			temp = *page++;
+			--len;
 
-			encoding->units[i] = &conf->units[red];
+			if (temp) {
+				if (red >= conf->n_enc_temps)
+					goto out_free_encoding;
+
+				encoding->units[i]->encoding = conf->enc_temps[red];
+			}
+			else {
+				if (red >= conf->n_units)
+					goto out_free_encoding;
+
+				encoding->units[i]->disk = &conf->units[red];
+			}
+			encoding->units[i]->temporary = temp;
 		}
 
 		WITHLOCKCONF(conf, flags, {
-		raidxor_safe_free_encoding(&conf->units[index]);
-		conf->units[index].encoding = encoding;
+		if (redundant == 2) {
+			if (conf->enc_temps[index])
+				kfree(conf->enc_temps[index]);
+			conf->enc_temps[index] = encoding;
+		}
+		else {
+			raidxor_safe_free_encoding(&conf->units[index]);
+			conf->units[index].encoding = encoding;
+		}
 		});
 
 		printk(KERN_INFO "raidxor: read redundant unit encoding info for unit %u\n", index);
@@ -308,7 +338,8 @@ raidxor_store_encoding(mddev_t *mddev, const char *page, size_t len)
 out_free_encoding:
 	kfree(encoding);
 out_reset:
-	conf->units[index].redundant = -1;
+	if (redundant != 2)
+		conf->units[index].redundant = -1;
 out:
 	return -EINVAL;
 }

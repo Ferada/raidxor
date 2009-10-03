@@ -10,6 +10,7 @@
 #define LEVEL_XOR (-10)
 
 typedef struct disk_info disk_info_t;
+typedef struct coding coding_t;
 typedef struct encoding encoding_t;
 typedef struct decoding decoding_t;
 typedef struct raidxor_bio raidxor_bio_t;
@@ -32,6 +33,8 @@ struct cache_line {
 
 	raidxor_bio_t *rxbio;
 	struct bio *waiting;
+
+	struct page **temp_buffers;
 
 	struct page *buffers[0];
 };
@@ -187,7 +190,15 @@ struct disk_info {
 	resource_t *resource;
 };
 
+struct coding {
+	unsigned int temporary;
 
+	union {
+		disk_info_t *disk;
+		encoding_t *encoding;
+		decoding_t *decoding;
+	};
+};
 
 /**
  * struct encoding - encoding information for a unit
@@ -201,7 +212,7 @@ struct disk_info {
  */
 struct encoding {
 	unsigned int n_units;
-	disk_info_t *units[0];
+	coding_t *units[0];
 };
 
 /**
@@ -211,13 +222,15 @@ struct encoding {
  */
 struct decoding {
 	unsigned int n_units;
-	disk_info_t *units[0];
+	coding_t *units[0];
 };
 
-static int raidxor_xor_combine_encode(struct bio *bioto,
+static int raidxor_xor_combine_encode(cache_t *cache, unsigned int n_line,
+				      struct bio *bioto,
 				      raidxor_bio_t *rxbio,
 				      encoding_t *encoding);
-static int raidxor_xor_combine_decode(struct bio *bioto,
+static int raidxor_xor_combine_decode(cache_t *cache, unsigned int n_line,
+				      struct bio *bioto,
 				      raidxor_bio_t *rxbio,
 				      decoding_t *decoding);
 
@@ -267,6 +280,10 @@ struct raidxor_conf {
 	unsigned int units_per_resource;
 	unsigned int n_resources;
 	resource_t **resources;
+
+	unsigned int n_enc_temps, n_dec_temps;
+	encoding_t **enc_temps;
+	decoding_t **dec_temps;
 
 	unsigned int n_units, n_data_units;
 	disk_info_t units[0];

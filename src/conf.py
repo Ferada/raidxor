@@ -356,15 +356,30 @@ def block_name (device):
 def generate_encoding_shell_script (out):
     global units
 
-    tmp = filter (lambda x: isinstance(x, unit), units)
-
-    for i in range (0, len (tmp)):
-        if not tmp[i].redundant:
-            out.write ("""echo -en '\\0%s\\00""" % (oct (i)))
+    tmpunits = filter (lambda x: isinstance(x, unit), units)
+    temps = filter (lambda x: isinstance(x, temporary), units)
+    
+    for i in range (0, len (tmpunits)):
+        out.write ("""echo -en '\\0%s""" % (oct (len (temps))))
+        if not tmpunits[i].redundant:
+            out.write ("""\\0%s\\00""" % (oct (i)))
         else:
-            out.write ("""echo -en '\\0%s\\01\\0%s""" % (oct (i), oct (len (tmp[i].encoding))))
-            for u in tmp[i].encoding:
-                out.write ("""\\0%s""" % (oct (tmp.index (u))))
+            out.write ("""\\0%s\\01\\0%s""" % (oct (i), oct (len (tmpunits[i].encoding))))
+            for u in tmpunits[i].encoding:
+                if isinstance (u, unit):
+                    out.write ("""\\00\\0%s""" % (oct (tmpunits.index (u))))
+                else:
+                    out.write ("""\\01\\0%s""" % (oct (temps.index (u))))
+        out.write ("' > tmp && cat tmp > /sys/block/%s/md/encoding\n" % (block_name (raid_device)))
+
+    for i in range (0, len (temps)):
+        out.write ("""echo -en '\\0%s""" % (oct (len (temps))))
+        out.write("""\\0%s\\02\\0%s""" % (oct (i), oct (len (temps[i].encoding))))
+        for u in temps.encoding:
+            if isinstance (u, unit):
+                out.write ("""\\00\\0%s""" % (oct (tmpunits.index (u))))
+            else:
+                out.write ("""\\01\\0%s""" % (oct (temps.index (u))))
         out.write ("' > tmp && cat tmp > /sys/block/%s/md/encoding\n" % (block_name (raid_device)))
 
 def generate_decoding_shell_script (out):

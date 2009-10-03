@@ -147,7 +147,7 @@ static disk_info_t * raidxor_find_unit_decoding(decoding_t *decoding,
 	CHECK_ARG_RET_NULL(unit);
 
 	for (i = 0; i < decoding->n_units; ++i)
-		if (decoding->units[i] == unit)
+		if (decoding->units[i]->disk == unit)
 			return unit;
 
 	return NULL;
@@ -241,6 +241,32 @@ static void raidxor_free_bio(raidxor_bio_t *rxbio)
 	kfree(rxbio);
 }
 
+static void raidxor_cache_line_free_temps(cache_t *cache, unsigned int line)
+{
+	unsigned int i;
+
+	CHECK_ARG_RET(cache);
+	CHECK_PLAIN_RET(line < cache->n_lines);
+
+	for (i = 0; i < min(cache->conf->n_enc_temps, cache->conf->n_dec_temps) * cache->n_chunk_mult; ++i) {
+		safe_put_page(cache->lines[line]->temp_buffers[i]);
+		cache->lines[line]->temp_buffers[i] = NULL;
+	}
+
+	kfree(cache->lines[line]->temp_buffers);
+	cache->lines[line]->temp_buffers = NULL;
+}
+
+static void raidxor_cache_free_temps(cache_t *cache)
+{
+	unsigned int i;
+
+	CHECK_ARG_RET(cache);
+
+	for (i = 0; i < cache->n_lines; ++i)
+		raidxor_cache_line_free_temps(cache, i);
+}
+
 static void raidxor_cache_drop_line(cache_t *cache, unsigned int line)
 {
 	unsigned int i;
@@ -252,6 +278,8 @@ static void raidxor_cache_drop_line(cache_t *cache, unsigned int line)
 		safe_put_page(cache->lines[line]->buffers[i]);
 		cache->lines[line]->buffers[i] = NULL;
 	}
+
+	raidxor_cache_line_free_temps(cache, line);
 }
 
 /**
@@ -306,6 +334,53 @@ out_free_lines:
 	return NULL;
 }
 
+static int raidxor_cache_line_ensure_temps(cache_t *cache, unsigned int line)
+{
+	unsigned int i;
+	unsigned int to = min(cache->conf->n_enc_temps,
+			      cache->conf->n_dec_temps) *
+		cache->n_chunk_mult;
+
+	CHECK_ARG_RET(cache);
+	CHECK_PLAIN_RET(line < cache->n_lines);
+
+	if (cache->lines[line]->temp_buffers)
+		return 0;
+
+	cache->lines[line]->temp_buffers = kmalloc(sizeof(struct page *) * to,
+						   GFP_NOIO);
+	if (!cache->lines[line]->temp_buffers)
+		goto out;
+
+	for (i = 0; i < to; ++i) {
+		if (!(cache->lines[line]->temp_buffers[i] = alloc_page(GFP_NOIO))) {
+			printk(KERN_EMERG "page allocation failed for line %u\n", line);
+			goto out_free_pages;
+		}
+	}
+
+	return 0;
+out_free_pages:
+	raidxor_cache_line_free_temps(cache, line);
+out:
+	return 1;
+}
+
+static int raidxor_cache_ensure_temps(cache_t *cache)
+{
+	unsigned int i;
+
+	CHECK_ARG_RET(cache);
+	
+	for (i = 0; i < cache->n_lines; ++i)
+		if (raidxor_cache_line_ensure_temps(cache, i))
+			goto out_free_pages;
+
+	return 0;
+out_free_pages:
+	raidxor_cache_free_temps(cache);
+}
+
 static void raidxor_free_cache(cache_t *cache)
 {
 	unsigned int i;
@@ -344,12 +419,119 @@ static void raidxor_safe_free_encoding(disk_info_t *unit)
 	}
 }
 
+static int raidxor_alloc_enc_temps(raidxor_conf_t *conf)
+{
+	unsigned int i;
+
+	CHECK_ARG_RET(conf);
+
+	if (conf->enc_temps)
+		return 0;
+
+	conf->enc_temps = kmalloc(sizeof(encoding_t *) * conf->n_enc_temps,
+				  GFP_NOIO);
+	if (!conf->enc_temps)
+		goto out;
+
+	return 0;
+out:
+	return 1;
+}
+
+static int raidxor_alloc_dec_temps(raidxor_conf_t *conf)
+{
+	unsigned int i;
+
+	CHECK_ARG_RET(conf);
+
+	if (conf->dec_temps)
+		return 0;
+
+	conf->dec_temps = kmalloc(sizeof(decoding_t *) * conf->n_dec_temps,
+				  GFP_NOIO);
+	if (!conf->dec_temps)
+		goto out;
+
+	return 0;
+out:
+	return 1;
+}
+
+static void raidxor_safe_free_enc_temps(raidxor_conf_t *conf)
+{
+	unsigned int i;
+
+	CHECK_ARG_RET(conf);
+
+	if (!conf->enc_temps)
+		return;
+
+	for (i = 0; i < conf->n_enc_temps; ++i)
+		if (conf->enc_temps[i]) kfree(conf->enc_temps[i]);
+
+	kfree(conf->enc_temps);
+	conf->enc_temps = NULL;
+}
+
+static void raidxor_safe_free_dec_temps(raidxor_conf_t *conf)
+{
+	unsigned int i;
+
+	CHECK_ARG_RET(conf);
+
+	if (!conf->dec_temps)
+		return;
+
+	for (i = 0; i < conf->n_dec_temps; ++i)
+		if (conf->dec_temps[i]) kfree(conf->dec_temps[i]);
+
+	kfree(conf->dec_temps);
+	conf->dec_temps = NULL;
+}
+
+static int raidxor_ensure_enc_temps(raidxor_conf_t *conf,
+				    unsigned int ntemps)
+{
+	CHECK_ARG_RET(conf);
+
+	if (ntemps == conf->n_enc_temps)
+		return 0;
+
+	raidxor_safe_free_enc_temps(conf);
+
+	if (ntemps == 0)
+		return 0;
+
+	conf->n_enc_temps = ntemps;
+
+	return raidxor_alloc_enc_temps(conf);
+}
+
+static int raidxor_ensure_dec_temps(raidxor_conf_t *conf,
+				    unsigned int ntemps)
+{
+	CHECK_ARG_RET(conf);
+
+	if (ntemps == conf->n_dec_temps)
+		return 0;
+
+	raidxor_safe_free_dec_temps(conf);
+
+	if (ntemps == 0)
+		return 0;
+
+	conf->n_dec_temps = ntemps;
+
+	return raidxor_alloc_dec_temps(conf);
+}
+
 /**
  * raidxor_safe_free_conf() - frees resource information
  *
  * Must be called inside conf lock.
  */
-static void raidxor_safe_free_conf(raidxor_conf_t *conf) {
+static void raidxor_safe_free_conf(raidxor_conf_t *conf)
+{
 	unsigned int i;
 
 	CHECK_ARG_RET(conf);
@@ -367,6 +549,9 @@ static void raidxor_safe_free_conf(raidxor_conf_t *conf) {
 		raidxor_free_cache(conf->cache);
 		conf->cache = NULL;
 	}
+
+	raidxor_safe_free_enc_temps(conf);
+	raidxor_safe_free_dec_temps(conf);
 
 	for (i = 0; i < conf->n_units; ++i) {
 		raidxor_safe_free_encoding(&conf->units[i]);
