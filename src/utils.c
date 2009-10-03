@@ -403,23 +403,17 @@ static void raidxor_copy_bio_to_cache(cache_t *cache, unsigned int n_line,
 	CHECK_PLAIN_RET(offset >= 0);
 
 	bio_for_each_segment(bvl, bio, i) {
-		CHECK_MAP;
 		bio_mapped = __bio_kmap_atomic(bio, i, KM_USER0);
-		CHECK_MAP;
-		page_mapped = kmap_atomic(line->buffers[j], KM_USER0);
-		//page_mapped = kmap(line->buffers[j]);
-
-		/* printk(KERN_EMERG "copying %lu bytes for index %d, buffer %d\n", PAGE_SIZE, i, j); */
+		//page_mapped = kmap_atomic(line->buffers[j], KM_USER0);
+		page_mapped = kmap(line->buffers[j]);
 
 		memmove(page_mapped, bio_mapped, PAGE_SIZE);
 
-		kunmap_atomic(page_mapped, KM_USER0);
-		//kunmap(line->buffers[j]);
+		//kunmap_atomic(page_mapped, KM_USER0);
+		kunmap(line->buffers[j]);
 		__bio_kunmap_atomic(bio_mapped, KM_USER0);
 		++j;
 	}
-
-	CHECK_LINE;
 }
 
 /**
@@ -451,23 +445,19 @@ static void raidxor_copy_bio_from_cache(cache_t *cache, unsigned int n_line,
 	CHECK_PLAIN_RET(offset >= 0);
 
 	bio_for_each_segment(bvl, bio, i) {
-		CHECK_MAP;
 		bio_mapped = __bio_kmap_atomic(bio, i, KM_USER0);
-		CHECK_MAP;
-		page_mapped = kmap_atomic(line->buffers[j], KM_USER0);
-		//page_mapped = kmap(line->buffers[j]);
+		//page_mapped = kmap_atomic(line->buffers[j], KM_USER0);
+		page_mapped = kmap(line->buffers[j]);
 
 		/* printk(KERN_EMERG "copying %lu bytes for index %d, buffer %d\n", PAGE_SIZE, i, j); */
 
 		memmove(bio_mapped, page_mapped, PAGE_SIZE);
 
-		kunmap_atomic(page_mapped, KM_USER0);
-		//kunmap(line->buffers[j]);
+		//kunmap_atomic(page_mapped, KM_USER0);
+		kunmap(line->buffers[j]);
 		__bio_kunmap_atomic(bio_mapped, KM_USER0);
 		++j;
 	}
-
-	CHECK_LINE;
 }
 
 static void raidxor_copy_bio(struct bio *bioto, struct bio *biofrom)
@@ -481,9 +471,7 @@ static void raidxor_copy_bio(struct bio *bioto, struct bio *biofrom)
 		bvto = bio_iovec_idx(bioto, i);
 		bvfrom = bio_iovec_idx(biofrom, i);
 
-		CHECK_MAP;
 		tomapped = (unsigned char *) kmap(bvto->bv_page);
-		CHECK_MAP;
 		frommapped = (unsigned char *) kmap(bvfrom->bv_page);
 
 		toptr = tomapped + bvto->bv_offset;

@@ -97,7 +97,6 @@ static int raidxor_cache_make_ready(cache_t *cache, unsigned int n_line)
 
 	for (i = 0; i < (cache->n_buffers + cache->n_red_buffers) * cache->n_chunk_mult; ++i) {
 		/* printk(KERN_EMERG "line->buffers[%u] at %p, before %p\n", i, &line->buffers[i], line->buffers[i]); */
-		CHECK_MALLOC;
 		if (!(line->buffers[i] = alloc_page(GFP_NOIO))) {
 			printk(KERN_EMERG "page allocation failed for line %u\n", n_line);
 			goto out_free_pages;
@@ -245,7 +244,6 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 		goto out;
 	}
 
-	CHECK_MALLOC;
 	rxbio = raidxor_alloc_bio(conf->n_units);
 	CHECK_PLAIN(rxbio);
 #undef CHECK_JUMP_LABEL
@@ -263,7 +261,6 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n)
 		/* we also load the redundant pages */
 
 		/* only one chunk */
-		CHECK_MALLOC;
 		rxbio->bios[i] = bio = bio_alloc(GFP_NOIO, n_chunk_mult);
 		CHECK_ALLOC(rxbio->bios[i]);
 
@@ -344,7 +341,6 @@ static int raidxor_cache_writeback_line(cache_t *cache, unsigned int n)
 	}
 	});
 
-	CHECK_MALLOC;
 	rxbio = raidxor_alloc_bio(conf->n_units);
 	CHECK_PLAIN(rxbio);
 #undef CHECK_JUMP_LABEL
@@ -360,7 +356,6 @@ static int raidxor_cache_writeback_line(cache_t *cache, unsigned int n)
 
 	for (i = 0, l = 0; i < rxbio->n_bios; ++i) {
 		/* only one chunk */
-		CHECK_MALLOC;
 		rxbio->bios[i] = bio = bio_alloc(GFP_NOIO, cache->n_chunk_mult);
 		CHECK_ALLOC(rxbio->bios[i]);
 
@@ -860,13 +855,9 @@ static void raidxor_handle_requests(cache_t *cache, unsigned int n_line)
 	while ((bio = raidxor_cache_remove_request(cache, n_line))) {
 		UNLOCKCONF(cache->conf, flags);
 
-		CHECK_LINE;
-
 		if (bio_data_dir(bio) == WRITE)
 			raidxor_copy_bio_to_cache(cache, n_line, bio);
 		else raidxor_copy_bio_from_cache(cache, n_line, bio);
-
-		CHECK_LINE;
 
 		bio_endio(bio, 0);
 
@@ -1066,7 +1057,6 @@ static int raidxor_run(mddev_t *mddev)
 	if (mddev->raid_disks < 1)
 		goto out_inval;
 
-	CHECK_MALLOC;
 	conf = kzalloc(sizeof(raidxor_conf_t) +
 		       sizeof(struct disk_info) * mddev->raid_disks, GFP_KERNEL);
 	mddev->private = conf;
@@ -1247,8 +1237,6 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 	/* printk(KERN_EMERG "raidxor: got request\n"); */
 
 	WITHLOCKCONF(conf, flags, {
-//	LOCKCONF(conf, flags);
-//	spin_lock_irq(&conf->device_lock);
 #undef CHECK_JUMP_LABEL
 #define CHECK_JUMP_LABEL out_unlock
 
@@ -1283,8 +1271,6 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 	mod = do_div(div, PAGE_SIZE >> 9);
 	CHECK_PLAIN(mod == 0);
 
-	CHECK_LINE;
-
 	if (bio->bi_sector + (bio->bi_size >> 9) > strip_sectors) {
 		/* TODO: split bio */
 		printk(KERN_ERR "need to split request because "
@@ -1294,8 +1280,6 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 		       (unsigned long long) strip_sectors);
 		goto out_unlock;
 	}
-
-	CHECK_LINE;
 
 	/* look for matching line or otherwise available */
 	if (!raidxor_cache_find_line(cache, aligned_sector, &line)) {
@@ -1313,8 +1297,6 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 			goto out_unlock;
 	}
 
-	CHECK_LINE;
-
 	if (!raidxor_cache_find_line(cache, aligned_sector, &line))
 		goto out_unlock;
 
@@ -1323,7 +1305,6 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 	if (cache->lines[line]->status == CACHE_LINE_CLEAN ||
 	    cache->lines[line]->status == CACHE_LINE_READY)
 	{
-		CHECK_LINE;
 		UNLOCKCONF(conf, flags);
 		if (raidxor_cache_make_ready(cache, line)) {
 			CHECK_BUG("raidxor_cache_make_ready failed mysteriously");
@@ -1342,22 +1323,15 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 		}
 	}
 
-	CHECK_LINE;
-
-	/* TODO: which states are unacceptable? */
 	/* pack the request somewhere in the cache */
 	raidxor_cache_add_request(cache, line, bio);
 	});
-//	UNLOCKCONF(conf, flags);
-//	spin_unlock_irq(&conf->device_lock);
 
-	CHECK_LINE;
 	raidxor_wakeup_thread(conf);
 
 	return 0;
 out_unlock: __attribute__((unused))
 	UNLOCKCONF(conf, flags);
-	//spin_unlock_irq(&conf->device_lock);
 out: __attribute__((unused))
 	bio_io_error(bio);
 	return 0;
