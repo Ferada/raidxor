@@ -967,13 +967,13 @@ static void raidxord(mddev_t *mddev)
 	conf = mddev_to_conf(mddev);
 	CHECK_PLAIN_RET(conf);
 
+	cache = conf->cache;
+	CHECK_PLAIN_RET(cache);
+
 	WITHLOCKCONF(conf, flags, {
 	done = !test_bit(CONF_INCOMPLETE, &conf->flags);
 	});
 	if (done) return;
-
-	cache = conf->cache;
-	CHECK_PLAIN_RET(cache);
 
 	/* someone poked us.  see what we can do */
 	pr_debug("raidxor: raidxord active\n");
