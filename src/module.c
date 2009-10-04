@@ -321,7 +321,7 @@ static int raidxor_cache_writeback_line(cache_t *cache, unsigned int n_line)
 #define CHECK_JUMP_LABEL out
 	cache_line_t *line;
 	raidxor_bio_t *rxbio;
-	unsigned int i, j, k, l, n_chunk_mult, index;
+	unsigned int i, j, k, l, n_chunk_mult;
 	struct bio *bio;
 	unsigned long flags = 0;
 	raidxor_conf_t *conf = cache->conf;
@@ -523,28 +523,6 @@ static void raidxor_end_writeback_line(struct bio *bio, int error)
 	if (wake) raidxor_wakeup_thread(conf);
 }
 
-/**
- * raidxor_check_same_size_and_layout() - checks two bios
- *
- * Returns 0 if both bios have the same size and are layed out the same
- * way, else != 0.
- */
-static int raidxor_check_same_size_and_layout(struct bio *x, struct bio *y)
-{
-	unsigned long i;
-
-	/* have the same number of bio_vecs, */
-	if (x->bi_vcnt != y->bi_vcnt)
-		return 1;
-
-	/* and those are of the same length, pairwise */
-	for (i = 0; i < x->bi_vcnt; ++i)
-		if (x->bi_io_vec[i].bv_len != y->bi_io_vec[i].bv_len)
-			return 2;
-
-	return 0;
-}
-
 static int raidxor_xor_combine_temporary(cache_t *cache,
 					 unsigned int n_line,
 					 struct page **target,
@@ -555,12 +533,12 @@ static int raidxor_xor_combine_temporary(cache_t *cache,
 {
 #undef CHECK_JUMP_LABEL
 #define CHECK_JUMP_LABEL out
-	unsigned int i, j, k, nsrcs, index;
+	unsigned int i, j, k, index;
 	unsigned int err __attribute__((unused));
 	struct bio *biofrom;
-	struct bio_vec *bvto;
 	unsigned char *tomapped;
 	struct page **temps;
+	unsigned int nsrcs = 0;
 	const unsigned int nblocks = 5;
 	struct page *pages[nblocks];
 	void *srcs[nblocks];
@@ -620,7 +598,7 @@ static int raidxor_xor_combine_temporary(cache_t *cache,
 	}
 
 	return 0;
-out:
+out: __attribute((unused))
 	return 1;
 }
 
@@ -635,12 +613,10 @@ static int raidxor_xor_combine_encode_temporary(cache_t *cache, unsigned int n_l
 	CHECK_ARG(cache)
 	CHECK_ARGS3(pages, rxbio, encoding);
 
-	//CHECK_LINE;
-
 	return raidxor_xor_combine_temporary(cache, n_line, pages, rxbio,
 					     encoding->n_units,
 					     encoding->units, 1);
-out:
+out: __attribute((unused))
 	return 1;
 }
 
@@ -654,12 +630,10 @@ static int raidxor_xor_combine_decode_temporary(cache_t *cache, unsigned int n_l
 	CHECK_ARG(cache)
 	CHECK_ARGS3(pages, rxbio, decoding);
 
-	//CHECK_LINE;
-
 	return raidxor_xor_combine_temporary(cache, n_line, pages, rxbio,
 					     decoding->n_units,
 					     decoding->units, 0);
-out:
+out: __attribute((unused))
 	return 1;
 }
 
@@ -671,14 +645,13 @@ static int raidxor_xor_combine(cache_t *cache, unsigned int n_line,
 {
 #undef CHECK_JUMP_LABEL
 #define CHECK_JUMP_LABEL out
-	/* since we have control over bioto and rxbio, every bio has size
-	   M * CHUNK_SIZE with CHUNK_SIZE = N * PAGE_SIZE */
-	unsigned int i, j, k, nsrcs, index;
+	unsigned int i, j, k, index;
 	unsigned int err __attribute__((unused));
 	struct bio *biofrom;
 	struct bio_vec *bvto;
 	unsigned char *tomapped;
 	struct page **temps;
+	unsigned int nsrcs = 0;
 	const unsigned int nblocks = 5;
 	struct page *pages[nblocks];
 	void *srcs[nblocks];
@@ -740,7 +713,7 @@ static int raidxor_xor_combine(cache_t *cache, unsigned int n_line,
 	}
 
 	return 0;
-out:
+out: __attribute((unused))
 	return 1;
 }
 
@@ -754,10 +727,8 @@ static int raidxor_xor_combine_decode(cache_t *cache, unsigned int n_line,
 	CHECK_ARG(cache)
 	CHECK_ARGS3(bioto, rxbio, decoding);
 
-	//CHECK_LINE;
-
 	return raidxor_xor_combine(cache, n_line, bioto, rxbio, decoding->n_units, decoding->units, 0);
-out:
+out: __attribute((unused))
 	return 1;
 }
 
@@ -779,10 +750,8 @@ static int raidxor_xor_combine_encode(cache_t *cache, unsigned int n_line,
 	CHECK_ARG(cache);
 	CHECK_ARGS3(bioto, rxbio, encoding);
 
-	//CHECK_LINE;
-
 	return raidxor_xor_combine(cache, n_line, bioto, rxbio, encoding->n_units, encoding->units, 1);
-out:
+out: __attribute((unused))
 	return 1;
 }
 
@@ -797,7 +766,7 @@ static void raidxor_cache_recover(cache_t *cache, unsigned int n_line)
 	cache_line_t *line;
 	raidxor_conf_t *conf;
 	raidxor_bio_t *rxbio;
-	unsigned int i, index;
+	unsigned int i;
 	unsigned long flags = 0;
 
 	CHECK_FUN(raidxor_cache_recover);
@@ -1016,11 +985,11 @@ static void raidxor_handle_requests(cache_t *cache, unsigned int n_line)
 
 	CHECK_FUN(raidxor_handle_requests);
 
-	CHECK_ARG_RET(cache);
-	CHECK_PLAIN_RET(n_line < cache->n_lines);
+	CHECK_ARG(cache);
+	CHECK_PLAIN(n_line < cache->n_lines);
 
 	line = cache->lines[n_line];
-	CHECK_PLAIN_RET(line);
+	CHECK_PLAIN(line);
 
 	WITHLOCKCONF(cache->conf, flags, {
 #undef CHECK_JUMP_LABEL
@@ -1049,9 +1018,9 @@ static void raidxor_handle_requests(cache_t *cache, unsigned int n_line)
 	});
 
 	return;
-out_unlock:
+out_unlock: __attribute((unused))
 	UNLOCKCONF(cache->conf, flags);
-out:
+out: __attribute((unused))
 	return;
 }
 
@@ -1357,6 +1326,7 @@ static void raidxor_align_sector_to_strip(raidxor_conf_t *conf,
 		*sector -= mod;
 }
 
+static int raidxor_check_bio_size_and_layout(raidxor_conf_t *, struct bio *) __attribute__((unused));
 /**
  * raidxor_check_bio_size_and_layout() - checks a bio for compatibility
  *

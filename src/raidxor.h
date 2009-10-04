@@ -442,7 +442,6 @@ struct raidxor_bio {
 	printk(CHECK_LEVEL "raidxor: %s:%i:%i\n", __FILE__, __LINE__, smp_processor_id())
 #define CHECK_FUN(fun) \
 	printk(CHECK_LEVEL "raidxor: %s:%i:%i: %s\n", __FILE__, __LINE__, smp_processor_id(), #fun)
-#define CHECK_FUN(fun)
 #define CHECK_MAP \
 	printk(CHECK_LEVEL "raidxor: %s:%i:%i: kmap\n", __FILE__, __LINE__, smp_processor_id());
 #define CHECK_MALLOC \

@@ -1,9 +1,5 @@
 /* -*- mode: c; coding: utf-8; c-file-style: "K&R"; tab-width: 8; indent-tabs-mode: t; -*- */
 
-#ifdef RAIDXOR_RUN_TESTCASES
-#include "tests.c"
-#endif
-
 static struct mdk_personality raidxor_personality =
 {
 	.name         = "raidxor",
@@ -24,11 +20,6 @@ static struct mdk_personality raidxor_personality =
 
 static int __init raidxor_init(void)
 {
-	#ifdef RAIDXOR_RUN_TESTCASES
-	if (raidxor_run_test_cases())
-		return -1;
-	#endif
-
 	return register_md_personality(&raidxor_personality);
 }
 

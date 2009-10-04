@@ -43,6 +43,7 @@ static const char * raidxor_cache_line_status(cache_line_t *line)
 	return "UNKNOWN!";
 }
 
+static void raidxor_cache_print_status(cache_t *) __attribute__((unused));
 static void raidxor_cache_print_status(cache_t *cache)
 {
 	unsigned int i;
@@ -104,6 +105,7 @@ static struct bio * raidxor_cache_remove_request(cache_t *cache,
 	return result;
 }
 
+static unsigned int raidxor_cache_line_length_requests(cache_t *, unsigned int) __attribute__((unused));
 static unsigned int raidxor_cache_line_length_requests(cache_t *cache,
 						       unsigned int n_line)
 {
@@ -194,19 +196,6 @@ static disk_info_t * raidxor_find_unit_decoding(decoding_t *decoding,
 			return unit;
 
 	return NULL;
-}
-
-static unsigned int raidxor_unit_to_index(raidxor_conf_t *conf,
-					  disk_info_t *unit)
-{
-	unsigned int i;
-
-	for (i = 0; i < conf->n_units; ++i)
-		if (&conf->units[i] == unit)
-			return i;
-
-	CHECK_BUG("didn't find unit, badbadbad");
-	return 0;
 }
 
 static void clear_bio(struct bio *bio)
@@ -458,7 +447,6 @@ static int raidxor_alloc_enc_temps(raidxor_conf_t *conf)
 {
 #undef CHECK_JUMP_LABEL
 #define CHECK_JUMP_LABEL out
-	unsigned int i;
 
 	CHECK_FUN(raidxor_alloc_enc_temps);
 
@@ -481,7 +469,6 @@ static int raidxor_alloc_dec_temps(raidxor_conf_t *conf)
 {
 #undef CHECK_JUMP_LABEL
 #define CHECK_JUMP_LABEL out
-	unsigned int i;
 
 	CHECK_FUN(raidxor_alloc_dec_temps);
 
@@ -495,7 +482,7 @@ static int raidxor_alloc_dec_temps(raidxor_conf_t *conf)
 	CHECK_PLAIN(conf->dec_temps);
 
 	return 0;
-out:
+out: __attribute((unused))
 	return 1;
 }
 
@@ -598,7 +585,7 @@ static int raidxor_cache_ensure_temps(raidxor_conf_t *conf, unsigned int n_enc_t
 	return 0;
 out_free_pages:
 	raidxor_cache_free_temps(conf->cache);
-out:
+out: __attribute((unused))
 	return 1;
 }
 
