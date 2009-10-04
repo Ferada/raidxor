@@ -489,7 +489,11 @@ def parse_cauchyrs ():
     failed = ""
     n = 0
     for i in range (0, len (resources)):
-        if resources[i].faulty or n < int (opts.redundant_resources):
+        if resources[i].faulty:
+            failed += " -f%s=%s" % (n, i)
+            n += 1
+    for i in range (0, len (resources)):
+        if n < int (opts.redundant_resources) and not resources[i].faulty:
             failed += " -f%s=%s" % (n, i)
             n += 1
     cmdline = "%s -k=%s -m=%s -M=%s %s %s" % (
@@ -530,6 +534,8 @@ if opts.mode == "decode":
     parse_faulty ()
     if any ([resource.faulty for resource in resources]):
         parse_cauchyrs ()
+        for u in units:
+            print u
         [generate_decoding_shell_script (file) for file in files]
 
 sys.exit (0)

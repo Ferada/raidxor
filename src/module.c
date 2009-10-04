@@ -82,8 +82,10 @@ static int raidxor_cache_make_ready(cache_t *cache, unsigned int n_line)
 	}
 
 	if (line->status != CACHE_LINE_CLEAN) {
+#ifdef RAIDXOR_DEBUG
 		printk(KERN_INFO "line status was %s, not CACHE_LINE_CLEAN\n",
 		       raidxor_cache_line_status(line));
+#endif
 		UNLOCKCONF(conf, flags);
 		return 1;
 	}
@@ -100,7 +102,9 @@ static int raidxor_cache_make_ready(cache_t *cache, unsigned int n_line)
 	for (i = 0; i < (cache->n_buffers + cache->n_red_buffers) * cache->n_chunk_mult; ++i) {
 		/* printk(KERN_EMERG "line->buffers[%u] at %p, before %p\n", i, &line->buffers[i], line->buffers[i]); */
 		if (!(line->buffers[i] = alloc_page(GFP_NOIO))) {
+#ifdef RAIDXOR_DEBUG
 			printk(KERN_INFO "page allocation failed for line %u\n", n_line);
+#endif
 			goto out_free_pages;
 		}
 		/* printk(KERN_EMERG "line->buffers[%u] is now %p\n", i, line->buffers[i]); */

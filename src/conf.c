@@ -409,12 +409,12 @@ static struct attribute_group raidxor_attrs_group = {
 
 static void raidxor_status(struct seq_file *seq, mddev_t *mddev)
 {
-	unsigned int i;
+	unsigned int i, j;
 	raidxor_conf_t *conf = mddev_to_conf(mddev);
 
 	seq_printf(seq, "\n");
 
-#if 0
+#if 1
 	for (i = 0; i < conf->n_units; ++i) {
 		seq_printf(seq, "unit %u: encoding = %p, decoding %p\n", i,
 			   conf->units[i].encoding, conf->units[i].decoding);
