@@ -1,18 +1,5 @@
 /* -*- mode: c; coding: utf-8; c-file-style: "K&R"; tab-width: 8; indent-tabs-mode: t; -*- */
 
-/**
- * raidxor_fill_page() - fills page with a value
- *
- * Copies value length times into the page buffer.
- */
-static void raidxor_fill_page(struct page *page, unsigned char value,
-			      unsigned long length)
-{
-	unsigned char *data = kmap(page);
-	memset(data, value, length);
-	kunmap(page);
-}
-
 static int raidxor_test_case_xor_combine_encode(void)
 {
 	unsigned long i;

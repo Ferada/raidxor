@@ -82,7 +82,7 @@ static int raidxor_cache_make_ready(cache_t *cache, unsigned int n_line)
 	}
 
 	if (line->status != CACHE_LINE_CLEAN) {
-		printk(KERN_EMERG "line status was %s, not CACHE_LINE_CLEAN\n",
+		printk(KERN_INFO "line status was %s, not CACHE_LINE_CLEAN\n",
 		       raidxor_cache_line_status(line));
 		UNLOCKCONF(conf, flags);
 		return 1;
@@ -100,7 +100,7 @@ static int raidxor_cache_make_ready(cache_t *cache, unsigned int n_line)
 	for (i = 0; i < (cache->n_buffers + cache->n_red_buffers) * cache->n_chunk_mult; ++i) {
 		/* printk(KERN_EMERG "line->buffers[%u] at %p, before %p\n", i, &line->buffers[i], line->buffers[i]); */
 		if (!(line->buffers[i] = alloc_page(GFP_NOIO))) {
-			printk(KERN_EMERG "page allocation failed for line %u\n", n_line);
+			printk(KERN_INFO "page allocation failed for line %u\n", n_line);
 			goto out_free_pages;
 		}
 		/* printk(KERN_EMERG "line->buffers[%u] is now %p\n", i, line->buffers[i]); */
@@ -311,6 +311,7 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n_line)
 out_free_bio: __attribute__((unused))
 	raidxor_free_bio(rxbio);
 out: __attribute__((unused))
+	raidxor_cache_abort_requests(cache, n_line);
 	return 1;
 }
 
@@ -320,7 +321,7 @@ static int raidxor_cache_writeback_line(cache_t *cache, unsigned int n_line)
 #define CHECK_JUMP_LABEL out
 	cache_line_t *line;
 	raidxor_bio_t *rxbio;
-	unsigned int i, j, k, l, n_chunk_mult;
+	unsigned int i, j, k, l, n_chunk_mult, index;
 	struct bio *bio;
 	unsigned long flags = 0;
 	raidxor_conf_t *conf = cache->conf;
@@ -394,8 +395,12 @@ static int raidxor_cache_writeback_line(cache_t *cache, unsigned int n_line)
 	}
 
 	for (i = 0; i < conf->n_enc_temps; ++i) {
-		/*if (raidxor_xor_combine_encode_temporary(cache, line))
-		  goto out_free_bio;*/
+		/* printk(KERN_EMERG "encoding temporary entry %u of %u at temp_buffers[%u]\n", i, conf->n_enc_temps, i * cache->n_chunk_mult); */
+		if (raidxor_xor_combine_encode_temporary(cache, n_line,
+							 &line->temp_buffers[i * cache->n_chunk_mult],
+							 rxbio,
+							 conf->enc_temps[i]))
+			goto out_free_bio;
 	}
 	
 	for (i = 0; i < rxbio->n_bios; ++i) {
@@ -540,46 +545,186 @@ static int raidxor_check_same_size_and_layout(struct bio *x, struct bio *y)
 	return 0;
 }
 
+static int raidxor_xor_combine_temporary(cache_t *cache,
+					 unsigned int n_line,
+					 struct page **target,
+					 raidxor_bio_t *rxbio,
+					 unsigned int n_units,
+					 coding_t *units,
+					 unsigned int encoding)
+{
+#undef CHECK_JUMP_LABEL
+#define CHECK_JUMP_LABEL out
+	unsigned int i, j, k, nsrcs, index;
+	unsigned int err __attribute__((unused));
+	struct bio *biofrom;
+	struct bio_vec *bvto;
+	unsigned char *tomapped;
+	struct page **temps;
+	const unsigned int nblocks = 5;
+	struct page *pages[nblocks];
+	void *srcs[nblocks];
+	struct bio *bios[nblocks];
+	raidxor_conf_t *conf;
+
+	CHECK_FUN(raidxor_xor_combine_temporary);
+
+	CHECK_ARG(cache);
+	CHECK_ARG(rxbio);
+
+	conf = cache->conf;
+
+	i = 1;
+
+	if (units[0].temporary) {
+		if (encoding)
+			index = raidxor_find_enc_temps(cache->conf, units[0].encoding);
+		else
+			index = raidxor_find_dec_temps(cache->conf, units[0].decoding);
+		temps = &cache->lines[n_line]->temp_buffers[index * cache->n_chunk_mult];
+		raidxor_copy_pages(cache->n_chunk_mult, target, temps);
+	}
+	else {
+		/* copying first bio buffers */
+		biofrom = raidxor_find_bio(rxbio, units[0].disk);
+		raidxor_copy_bio_to_pages(target, biofrom);
+	}
+
+	/* XOR every NBLOCKS bio_vecs, repeating for all bio_vec of the bios */
+	while (i < n_units) {
+		for (j = 0; j < cache->n_chunk_mult; ++j) {
+			tomapped = (unsigned char *) kmap(target[j]);
+
+			for (k = i, nsrcs = 0; k < n_units && k < (i + nblocks); ++k, ++nsrcs) {
+				if (units[k].temporary) {
+					if (encoding)
+						index = raidxor_find_enc_temps(cache->conf, units[k].encoding);
+					else
+						index = raidxor_find_dec_temps(cache->conf, units[k].decoding);
+					pages[nsrcs] = cache->lines[n_line]->temp_buffers[cache->n_chunk_mult * index + j];
+				}
+				else {
+					if (j == 0) bios[nsrcs] = raidxor_find_bio(rxbio, units[k].disk);
+					pages[nsrcs] = bio_iovec_idx(bios[nsrcs], j)->bv_page;
+				}
+				srcs[nsrcs] = kmap(pages[nsrcs]);
+			}
+
+			xor_blocks(nsrcs, PAGE_SIZE, tomapped, srcs);
+
+			for (k = 0; k < nsrcs; ++k)
+				kunmap(pages[k]);
+			kunmap(target[j]);
+		}
+		i += nsrcs;
+	}
+
+	return 0;
+out:
+	return 1;
+}
+
+
+static int raidxor_xor_combine_encode_temporary(cache_t *cache, unsigned int n_line,
+						struct page **pages,
+						raidxor_bio_t *rxbio,
+						encoding_t *encoding)
+{
+#undef CHECK_JUMP_LABEL
+#define CHECK_JUMP_LABEL out
+	CHECK_ARG(cache)
+	CHECK_ARGS3(pages, rxbio, encoding);
+
+	//CHECK_LINE;
+
+	return raidxor_xor_combine_temporary(cache, n_line, pages, rxbio,
+					     encoding->n_units,
+					     encoding->units, 1);
+out:
+	return 1;
+}
+
+static int raidxor_xor_combine_decode_temporary(cache_t *cache, unsigned int n_line,
+						struct page **pages,
+						raidxor_bio_t *rxbio,
+						decoding_t *decoding)
+{
+#undef CHECK_JUMP_LABEL
+#define CHECK_JUMP_LABEL out
+	CHECK_ARG(cache)
+	CHECK_ARGS3(pages, rxbio, decoding);
+
+	//CHECK_LINE;
+
+	return raidxor_xor_combine_temporary(cache, n_line, pages, rxbio,
+					     decoding->n_units,
+					     decoding->units, 0);
+out:
+	return 1;
+}
+
 static int raidxor_xor_combine(cache_t *cache, unsigned int n_line,
 			       struct bio *bioto,
 			       raidxor_bio_t *rxbio,
-			       unsigned int n_units, coding_t *units[0]) 
+			       unsigned int n_units, coding_t *units,
+			       unsigned int encoding)
 {
 #undef CHECK_JUMP_LABEL
 #define CHECK_JUMP_LABEL out
 	/* since we have control over bioto and rxbio, every bio has size
 	   M * CHUNK_SIZE with CHUNK_SIZE = N * PAGE_SIZE */
-	unsigned int i, j, k, t, u, nsrcs;
+	unsigned int i, j, k, nsrcs, index;
 	unsigned int err __attribute__((unused));
 	struct bio *biofrom;
 	struct bio_vec *bvto;
 	unsigned char *tomapped;
+	struct page **temps;
 	const unsigned int nblocks = 5;
 	struct page *pages[nblocks];
 	void *srcs[nblocks];
 	struct bio *bios[nblocks];
+	raidxor_conf_t *conf;
 
 	CHECK_FUN(raidxor_xor_combine);
 
-	/* copying first bio buffers */
-	biofrom = raidxor_find_bio(rxbio, units[0]->disk);
-	raidxor_copy_bio(bioto, biofrom);
+	CHECK_ARG(units);
+
+	conf = cache->conf;
+
+	i = 1;
+
+	if (units[0].temporary) {
+		if (encoding)
+			index = raidxor_find_enc_temps(cache->conf, units[0].encoding);
+		else
+			index = raidxor_find_dec_temps(cache->conf, units[0].decoding);
+		/* printk(KERN_EMERG "xor_combine: using 0 temporary entry %u, %u\n", index, index * cache->n_chunk_mult); */
+		temps = &cache->lines[n_line]->temp_buffers[index * cache->n_chunk_mult];
+		raidxor_copy_pages_to_bio(bioto, temps);
+	}
+	else {
+		/* copying first bio buffers */
+		biofrom = raidxor_find_bio(rxbio, units[0].disk);
+		raidxor_copy_bio(bioto, biofrom);
+	}
 
 	/* XOR every NBLOCKS bio_vecs, repeating for all bio_vec of the bios */
-	i = 1;
-	t = 0;
 	while (i < n_units) {
 		for (j = 0; j < bioto->bi_vcnt; ++j) {
 			bvto = bio_iovec_idx(bioto, j);
 			tomapped = (unsigned char *) kmap(bvto->bv_page);
 
-			for (k = i, u = t, nsrcs = 0; k < n_units && k < (i + nblocks); ++k, ++nsrcs) {
-				if (units[k]->temporary && j == 0) {
-					pages[nsrcs] = cache->lines[n_line]->temp_buffers[cache->n_chunk_mult * u + j];
-					++u;
+			for (k = i, nsrcs = 0; k < n_units && k < (i + nblocks); ++k, ++nsrcs) {
+				if (units[k].temporary) {
+					/* printk(KERN_EMERG "%d, disk %p, encoding %p, decoding %p\n", k, units[k].disk, units[k].encoding, units[k].decoding); */
+					if (encoding)
+						index = raidxor_find_enc_temps(cache->conf, units[k].encoding);
+					else
+						index = raidxor_find_dec_temps(cache->conf, units[k].decoding);
+					pages[nsrcs] = cache->lines[n_line]->temp_buffers[cache->n_chunk_mult * index + j];
 				}
 				else {
-					if (j == 0) bios[nsrcs] = raidxor_find_bio(rxbio, units[k]->disk);
+					if (j == 0) bios[nsrcs] = raidxor_find_bio(rxbio, units[k].disk);
 					pages[nsrcs] = bio_iovec_idx(bios[nsrcs], j)->bv_page;
 				}
 				srcs[nsrcs] = kmap(pages[nsrcs]);
@@ -592,7 +737,6 @@ static int raidxor_xor_combine(cache_t *cache, unsigned int n_line,
 			kunmap(bvto->bv_page);
 		}
 		i += nsrcs;
-		t = u;
 	}
 
 	return 0;
@@ -607,9 +751,12 @@ static int raidxor_xor_combine_decode(cache_t *cache, unsigned int n_line,
 {
 #undef CHECK_JUMP_LABEL
 #define CHECK_JUMP_LABEL out
+	CHECK_ARG(cache)
 	CHECK_ARGS3(bioto, rxbio, decoding);
 
-	return raidxor_xor_combine(cache, n_line, bioto, rxbio, decoding->n_units, decoding->units);
+	//CHECK_LINE;
+
+	return raidxor_xor_combine(cache, n_line, bioto, rxbio, decoding->n_units, decoding->units, 0);
 out:
 	return 1;
 }
@@ -629,9 +776,12 @@ static int raidxor_xor_combine_encode(cache_t *cache, unsigned int n_line,
 {
 #undef CHECK_JUMP_LABEL
 #define CHECK_JUMP_LABEL out
+	CHECK_ARG(cache);
 	CHECK_ARGS3(bioto, rxbio, encoding);
 
-	return raidxor_xor_combine(cache, n_line, bioto, rxbio, encoding->n_units, encoding->units);
+	//CHECK_LINE;
+
+	return raidxor_xor_combine(cache, n_line, bioto, rxbio, encoding->n_units, encoding->units, 1);
 out:
 	return 1;
 }
@@ -647,7 +797,7 @@ static void raidxor_cache_recover(cache_t *cache, unsigned int n_line)
 	cache_line_t *line;
 	raidxor_conf_t *conf;
 	raidxor_bio_t *rxbio;
-	unsigned int i;
+	unsigned int i, index;
 	unsigned long flags = 0;
 
 	CHECK_FUN(raidxor_cache_recover);
@@ -670,6 +820,15 @@ static void raidxor_cache_recover(cache_t *cache, unsigned int n_line)
 
 	line->status = CACHE_LINE_RECOVERY;
 	});
+
+	/* decoding temporaries first */
+	for (i = 0; i < conf->n_dec_temps; ++i) {
+		if (raidxor_xor_combine_decode_temporary(cache, n_line,
+							 &line->temp_buffers[i * cache->n_chunk_mult],
+							 rxbio,
+							 conf->dec_temps[i]))
+			goto out_free_rxbio;
+	}
 
 	/* decoding using direct style */
 	for (i = 0; i < rxbio->n_bios; ++i) {
@@ -777,16 +936,16 @@ static void raidxor_finish_lines(cache_t *cache)
 		case CACHE_LINE_READY:
 #ifdef RAIDXOR_DEBUG
 			if (line->waiting)
-				printk(KERN_EMERG "line %u with state READY has waiting in finish_lines\n", i);
+				printk(KERN_INFO "line %u with state READY has waiting in finish_lines\n", i);
 			else
-				printk(KERN_EMERG "line %u with state READY has no waiting in finish_lines\n", i);
+				printk(KERN_INFO "line %u with state READY has no waiting in finish_lines\n", i);
 #endif
 			/* can only happen if we stop the raid */
 			break;
 		case CACHE_LINE_CLEAN:
 			if (line->waiting) {
 #ifdef RAIDXOR_DEBUG
-				printk(KERN_EMERG "line %u with STATE CLEAN has waiting in finish_lines\n", i);
+				printk(KERN_INFO "line %u with STATE CLEAN has waiting in finish_lines\n", i);
 #endif
 				break;
 			}
@@ -795,7 +954,7 @@ static void raidxor_finish_lines(cache_t *cache)
 		case CACHE_LINE_UPTODATE:
 			if (line->waiting) {
 #ifdef RAIDXOR_DEBUG
-				printk(KERN_EMERG "line %u with STATE UPTODATE has waiting in finish_lines\n", i);
+				printk(KERN_INFO "line %u with STATE UPTODATE has waiting in finish_lines\n", i);
 #endif
 				break;
 			}
@@ -807,7 +966,7 @@ static void raidxor_finish_lines(cache_t *cache)
 		case CACHE_LINE_DIRTY:
 			if (line->waiting) {
 #ifdef RAIDXOR_DEBUG
-				printk(KERN_EMERG "line %u with STATE DIRTY has waiting in finish_lines\n", i);
+				printk(KERN_INFO "line %u with STATE DIRTY has waiting in finish_lines\n", i);
 #endif
 				break;
 			}
@@ -1020,7 +1179,7 @@ static void raidxord(mddev_t *mddev)
 
 #ifdef RAIDXOR_DEBUG
 	WITHLOCKCONF(conf, flags, {
-	raidxor_cache_print_status(cache);
+//	raidxor_cache_print_status(cache);
 	});
 #endif
 	pr_debug("raidxor: thread inactive, %u lines handled\n", handled);
@@ -1172,6 +1331,7 @@ static int raidxor_stop(mddev_t *mddev)
 
 	mddev_to_conf(mddev) = NULL;
 	raidxor_safe_free_conf(conf);
+	raidxor_complete_free_conf(conf);
 	kfree(conf);
 
 	return 0;

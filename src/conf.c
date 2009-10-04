@@ -15,19 +15,19 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 	mddev_t *mddev = conf->mddev;
 
 	if (!conf || !mddev) {
-		printk(KERN_EMERG "raidxor: NULL pointer in "
+		printk(KERN_INFO "raidxor: NULL pointer in "
 		       "raidxor_free_conf\n");
 		return;
 	}
 
 	if (conf->units_per_resource <= 0) {
-		printk(KERN_EMERG "raidxor: need units per resource: %u\n",
+		printk(KERN_INFO "raidxor: need units per resource: %u\n",
 		       conf->units_per_resource);
 		goto out;
 	}
 
 	if (conf->n_units % conf->units_per_resource != 0) {
-		printk(KERN_EMERG
+		printk(KERN_INFO
 		       "raidxor: parameters don't match %u %% %u != 0\n",
 		       conf->n_units,
 		       conf->units_per_resource);
@@ -37,7 +37,7 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 	conf->n_data_units = 0;
 	for (i = 0; i < conf->n_units; ++i) {
 		if (conf->units[i].redundant == -1) {
-			printk(KERN_EMERG
+			printk(KERN_INFO
 			       "raidxor: unit %u, %s is not initialized\n",
 			       i, bdevname(conf->units[i].rdev->bdev, buffer));
 			goto out;
@@ -47,7 +47,7 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 			++conf->n_data_units;
 	}
 
-	printk(KERN_EMERG "raidxor: got enough information, building raid\n");
+	printk(KERN_INFO "raidxor: got enough information, building raid\n");
 
 	conf->n_resources = conf->n_units / conf->units_per_resource;
 
@@ -85,9 +85,10 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 	if (!conf->cache)
 		goto out_free_resources;
 	conf->cache->conf = conf;
+	conf->trap1 = conf->trap2 = conf->trap3 = 42;
 
 	/* now a request is between 4096 and N_DATA_UNITS * CHUNK_SIZE bytes long */
-	printk(KERN_EMERG "and max sectors to %lu\n",
+	printk(KERN_INFO "and max sectors to %lu\n",
 	       (conf->chunk_size >> 9) * conf->n_data_units);
 	blk_queue_max_sectors(mddev->queue,
 			      (conf->chunk_size >> 9) * conf->n_data_units);
@@ -95,13 +96,13 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 				   (conf->chunk_size >> 1) *
 				   conf->n_data_units - 1);
 
-	printk(KERN_EMERG "setting device size\n");
+	printk(KERN_INFO "setting device size\n");
 
 	/* since all stripes are equally long */
 	mddev->array_sectors = conf->n_data_units * mddev->size * 2;
 	set_capacity(mddev->gendisk, mddev->array_sectors);
 
-	printk (KERN_EMERG "raidxor: array_sectors is %u * %llu= "
+	printk (KERN_INFO "raidxor: array_sectors is %u * %llu= "
 		"%llu blocks, %llu sectors\n",
 		(unsigned int) conf->n_data_units,
 		(unsigned long long) mddev->size * 2,
@@ -170,7 +171,7 @@ static ssize_t
 raidxor_store_decoding(mddev_t *mddev, const char *page, size_t len)
 {
 	raidxor_conf_t *conf = mddev_to_conf(mddev);
-	unsigned char index, length, i, red;
+	unsigned char index, length, i, red, ntemps, temp, temporary;
 	decoding_t *decoding;
 	unsigned long flags = 0;
 	size_t oldlen = len;
@@ -180,9 +181,23 @@ raidxor_store_decoding(mddev_t *mddev, const char *page, size_t len)
 	if (!conf)
 		return -ENODEV;
 
+	ntemps = *page++;
+	--len;
+
+	if (raidxor_cache_ensure_temps(conf, conf->n_enc_temps, ntemps))
+		goto out;
+
 	for (; len >= 1;) {
 		index = *page++;
 		--len;
+
+		temporary = *page++;
+		--len;
+
+		if (temporary > 1) {
+			printk(KERN_INFO "temporary != (0 | 1) == %u\n", temporary);
+			return -EINVAL;
+		}
 
 		if (index >= conf->n_units)
 			goto out;
@@ -197,33 +212,53 @@ raidxor_store_decoding(mddev_t *mddev, const char *page, size_t len)
 			goto out;
 
 		decoding = kzalloc(sizeof(decoding_t) +
-				   sizeof(disk_info_t *) * length, GFP_NOIO);
+				   sizeof(coding_t) * length, GFP_NOIO);
 		if (!decoding)
 			goto out;
 		decoding->n_units = length;
 
 		for (i = 0; i < length; ++i) {
+			temp = *page++;
+			--len;
+
 			red = *page++;
 			--len;
 
-			if (red >= conf->n_units)
-				goto out_free_decoding;
+			if (temp) {
+				if (red >= conf->n_dec_temps)
+					goto out_free_decoding;
 
-			decoding->units[i]->disk = &conf->units[red];
+				decoding->units[i].decoding = conf->dec_temps[red];
+			}
+			else {
+				if (red >= conf->n_units)
+					goto out_free_decoding;
+
+				decoding->units[i].disk = &conf->units[red];
+			}
+			decoding->units[i].temporary = temp;
 		}
 
 		WITHLOCKCONF(conf, flags, {
-		raidxor_safe_free_decoding(&conf->units[index]);
-		conf->units[index].decoding = decoding;
+		if (temporary) {
+			if (conf->dec_temps[index])
+				kfree(conf->dec_temps[index]);
+			conf->dec_temps[index] = decoding;
+		}
+		else {
+			raidxor_safe_free_decoding(&conf->units[index]);
+			conf->units[index].decoding = decoding;
+		}
 		});
 
-		printk(KERN_INFO "read decoding info\n");
+		printk(KERN_INFO "read decoding info for index %d%s\n", index, temporary ? ", temporary" : "");
 	}
 
 	return oldlen;
 out_free_decoding:
 	kfree(decoding);
 out:
+	printk(KERN_INFO "aborting from index %d%s\n", index, temporary ? ", temporary" : "");
 	return -EINVAL;
 }
 
@@ -250,7 +285,7 @@ raidxor_store_encoding(mddev_t *mddev, const char *page, size_t len)
 	ntemps = *page++;
 	--len;
 
-	if (raidxor_ensure_enc_temps(conf, ntemps))
+	if (raidxor_cache_ensure_temps(conf, ntemps, conf->n_dec_temps))
 		goto out;
 
 	for (; len >= 2;) {
@@ -292,31 +327,31 @@ raidxor_store_encoding(mddev_t *mddev, const char *page, size_t len)
 			goto out_reset;
 
 		encoding = kzalloc(sizeof(encoding_t) +
-				   sizeof(coding_t *) * length, GFP_NOIO);
+				   sizeof(coding_t) * length, GFP_NOIO);
 		if (!encoding)
 			goto out_reset;
 		encoding->n_units = length;
 
 		for (i = 0; i < length; ++i) {
-			red = *page++;
+			temp = *page++;
 			--len;
 
-			temp = *page++;
+			red = *page++;
 			--len;
 
 			if (temp) {
 				if (red >= conf->n_enc_temps)
 					goto out_free_encoding;
 
-				encoding->units[i]->encoding = conf->enc_temps[red];
+				encoding->units[i].encoding = conf->enc_temps[red];
 			}
 			else {
 				if (red >= conf->n_units)
 					goto out_free_encoding;
 
-				encoding->units[i]->disk = &conf->units[red];
+				encoding->units[i].disk = &conf->units[red];
 			}
-			encoding->units[i]->temporary = temp;
+			encoding->units[i].temporary = temp;
 		}
 
 		WITHLOCKCONF(conf, flags, {
@@ -373,19 +408,51 @@ static struct attribute_group raidxor_attrs_group = {
 
 static void raidxor_status(struct seq_file *seq, mddev_t *mddev)
 {
-	unsigned int i;
+	unsigned int i, j;
 	raidxor_conf_t *conf = mddev_to_conf(mddev);
 
 	seq_printf(seq, "\n");
+
+#if 0
+	for (i = 0; i < conf->n_units; ++i) {
+		seq_printf(seq, "unit %u: encoding = %p, decoding %p\n", i,
+			   conf->units[i].encoding, conf->units[i].decoding);
+		if (conf->units[i].encoding && conf->units[i].encoding->units) {
+			seq_printf(seq, "  encoding %d units\n", conf->units[i].encoding->n_units);
+			for (j = 0; j <conf->units[i].encoding->n_units; ++j) {
+				seq_printf(seq, "    entry %d: %d, disk %p, encoding %p\n", j,
+					   conf->units[i].encoding->units[j].temporary,
+					   conf->units[i].encoding->units[j].disk,
+					   conf->units[i].encoding->units[j].encoding);
+			}
+		}
+		if (conf->units[i].decoding && conf->units[i].decoding->units) {
+			seq_printf(seq, "  decoding %d units\n", conf->units[i].decoding->n_units);
+			for (j = 0; j < conf->units[i].decoding->n_units; ++j) {
+				seq_printf(seq, "    entry %d: %d, disk %p, decoding %p\n", j,
+					   conf->units[i].decoding->units[j].temporary,
+					   conf->units[i].decoding->units[j].disk,
+					   conf->units[i].decoding->units[j].decoding);
+			}
+		}
+	}
+
+	for (i = 0; i < conf->n_enc_temps; ++i) {
+		seq_printf(seq, "enc_temp %u: encoding = %p\n", i,
+			   conf->enc_temps[i]);
+	}
+
+	for (i = 0; i < conf->n_dec_temps; ++i) {
+		seq_printf(seq, "dec_temp %u: decoding = %p\n", i,
+			   conf->dec_temps[i]);
+	}
+#endif
 
 	for (i = 0; i < conf->cache->n_lines; ++i) {
 		seq_printf(seq, "line %u: %s at sector %llu\n", i,
 			   raidxor_cache_line_status(conf->cache->lines[i]),
 			   (unsigned long long) conf->cache->lines[i]->sector);
 	}
-
-	/* seq_printf(seq, " I'm feeling fine"); */
-	return;
 }
 
 #if 0

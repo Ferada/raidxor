@@ -102,6 +102,8 @@ class unit ():
             if title != "":
                 title += ", "
             title += "faulty "
+        if self.decoding:
+            red = ", %s" % [unit.name for unit in self.decoding]
         return "<%sunit %s on %s%s>" % (title, self.name, self.device, red)
     def mdname (self):
         return os.path.basename (self.device)
@@ -114,7 +116,7 @@ class temporary ():
         red = ""
         if self.encoding:
             red = ", %s" % [unit.name for unit in self.encoding]
-        return "<temporary %s%s>" % (self.name, enc)
+        return "<temporary %s%s>" % (self.name, red)
 
 def die (msg):
     sys.stderr.write (msg + "\n")
@@ -242,11 +244,10 @@ def handle_temp (line, match):
     global units
     (name, dec) = match.groups ()
 
-    pass
-#    unit = find_unit (name)
-#    if unit.decoding:
-#        sys.stderr.write ("overwriting temporary for %s\n" % unit.name)
-#    unit.decoding = convert_units (parse_units (dec))
+    unit = find_unit (name)
+    if unit.encoding:
+        sys.stderr.write ("overwriting temporary for %s\n" % unit.name)
+    unit.encoding = convert_units (parse_units (dec))
 
 matchers = [
     handle_raid_desc,
@@ -353,13 +354,38 @@ check_rect_layout ()
 def block_name (device):
     return os.path.basename (device)
 
+def unit_compare_encoding (a, b):
+    print "comparing %s and %s" % (a, b)
+    try:
+        if a.encoding.index (b) >= 0:
+            return 1
+    except:
+        try:
+            if b.encoding.index (a) >= 0:
+                return -1
+        except:
+            return 0
+
 def generate_encoding_shell_script (out):
     global units
 
     tmpunits = filter (lambda x: isinstance(x, unit), units)
     temps = filter (lambda x: isinstance(x, temporary), units)
-    
+    temps.sort(unit_compare_encoding)
+
+    for i in range (0, len (temps)):
+        print temps[i]
+        out.write ("""echo -en '\\0%s""" % (oct (len (temps))))
+        out.write("""\\0%s\\02\\0%s""" % (oct (i), oct (len (temps[i].encoding))))
+        for u in temps[i].encoding:
+            if isinstance (u, unit):
+                out.write ("""\\00\\0%s""" % (oct (tmpunits.index (u))))
+            else:
+                out.write ("""\\01\\0%s""" % (oct (temps.index (u))))
+        out.write ("' > tmp && cat tmp > /sys/block/%s/md/encoding\n" % (block_name (raid_device)))
+
     for i in range (0, len (tmpunits)):
+        print tmpunits[i]
         out.write ("""echo -en '\\0%s""" % (oct (len (temps))))
         if not tmpunits[i].redundant:
             out.write ("""\\0%s\\00""" % (oct (i)))
@@ -372,27 +398,33 @@ def generate_encoding_shell_script (out):
                     out.write ("""\\01\\0%s""" % (oct (temps.index (u))))
         out.write ("' > tmp && cat tmp > /sys/block/%s/md/encoding\n" % (block_name (raid_device)))
 
+def generate_decoding_shell_script (out):
+    global units
+
+    tmpunits = filter (lambda x: isinstance(x, unit), units)
+    temps = filter (lambda x: isinstance(x, temporary), units)
+    temps.sort(unit_compare_encoding)
+
     for i in range (0, len (temps)):
-        out.write ("""echo -en '\\0%s""" % (oct (len (temps))))
-        out.write("""\\0%s\\02\\0%s""" % (oct (i), oct (len (temps[i].encoding))))
-        for u in temps.encoding:
+        print temps[i]
+        out.write ("""echo -en '\\0%s\\0%s\\01\\0%s""" % (oct (len (temps)), oct (i), oct (len (temps[i].encoding))))
+        for u in temps[i].encoding:
             if isinstance (u, unit):
                 out.write ("""\\00\\0%s""" % (oct (tmpunits.index (u))))
             else:
                 out.write ("""\\01\\0%s""" % (oct (temps.index (u))))
-        out.write ("' > tmp && cat tmp > /sys/block/%s/md/encoding\n" % (block_name (raid_device)))
+        out.write ("' > tmp && cat tmp > /sys/block/%s/md/decoding\n" % (block_name (raid_device)))
 
-def generate_decoding_shell_script (out):
-    global units
-
-    tmp = filter (lambda x: isinstance(x, unit), units)
-
-    for i in range (0, len (tmp)):
-        if not tmp[i].faulty:
+    for i in range (0, len (tmpunits)):
+        if not tmpunits[i].faulty:
             continue
-        out.write ("""echo -en '\\0%s\\0%s""" % (oct (i), oct (len (tmp[i].decoding))))
-        for u in tmp[i].decoding:
-            out.write ("""\\0%s""" % (oct (tmp.index (u))))
+        print tmpunits[i]
+        out.write ("""echo -en '\\0%s\\0%s\\00\\0%s""" % (oct (len (temps)), oct (i), oct (len (tmpunits[i].decoding))))
+        for u in tmpunits[i].decoding:
+            if isinstance (u, unit):
+                out.write ("""\\00\\0%s""" % (oct (tmpunits.index (u))))
+            else:
+                out.write ("""\\01\\0%s""" % (oct (temps.index (u))))
         out.write ("' > tmp && cat tmp > /sys/block/%s/md/decoding\n" % (block_name (raid_device)))
 
 def generate_stop_shell_script (out):
@@ -411,7 +443,8 @@ $MDADM --manage %s -S
 
 def generate_start_shell_script (out):
     units_formatted = ""
-    for u in filter (lambda x: isinstance(x, unit), units):
+    tmpunits = filter (lambda x: isinstance(x, unit), units)
+    for u in tmpunits:
         units_formatted += " " + u.device
     out.write (
 """#!/bin/sh
@@ -427,7 +460,7 @@ $MDADM -v -v --create %s -R -c %s --level=xor \\
 	--raid-devices=%s%s
 if [[ ! $? -eq 0 ]]; then exit; fi
 
-""" % (opts.mdadm, raid_device, chunk_size / 1024, len (units), units_formatted))
+""" % (opts.mdadm, raid_device, chunk_size / 1024, len (tmpunits), units_formatted))
     generate_encoding_shell_script (out)
     out.write (
 """
@@ -439,12 +472,14 @@ rm tmp
 def parse_faulty ():
     global units
 
-    for unit in units:
-	path = "/sys/block/%s/md/dev-%s/state" % (block_name (raid_device), unit.mdname ())
+    tmp = filter (lambda x: isinstance(x, unit), units)
+
+    for u in tmp:
+	path = "/sys/block/%s/md/dev-%s/state" % (block_name (raid_device), u.mdname ())
 	for line in fileinput.input (path):
-            unit.faulty = (line.find("faulty") >= 0)
-            if unit.faulty:
-                unit.resource.faulty = True
+            u.faulty = (line.find("faulty") >= 0)
+            if u.faulty:
+                u.resource.faulty = True
             fileinput.close ()
             break
 
@@ -454,7 +489,7 @@ def parse_cauchyrs ():
     failed = ""
     n = 0
     for i in range (0, len (resources)):
-        if resources[i].faulty or n < opts.redundant_resources:
+        if resources[i].faulty or n < int (opts.redundant_resources):
             failed += " -f%s=%s" % (n, i)
             n += 1
     cmdline = "%s -k=%s -m=%s -M=%s %s %s" % (

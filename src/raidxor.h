@@ -212,7 +212,7 @@ struct coding {
  */
 struct encoding {
 	unsigned int n_units;
-	coding_t *units[0];
+	coding_t units[0];
 };
 
 /**
@@ -222,8 +222,17 @@ struct encoding {
  */
 struct decoding {
 	unsigned int n_units;
-	coding_t *units[0];
+	coding_t units[0];
 };
+
+static int raidxor_xor_combine_encode_temporary(cache_t *cache, unsigned int n_line,
+						struct page **pages,
+						raidxor_bio_t *rxbio,
+						encoding_t *encoding);
+static int raidxor_xor_combine_decode_temporary(cache_t *cache, unsigned int n_line,
+						struct page **pages,
+						raidxor_bio_t *rxbio,
+						decoding_t *decoding);
 
 static int raidxor_xor_combine_encode(cache_t *cache, unsigned int n_line,
 				      struct bio *bioto,
@@ -282,8 +291,11 @@ struct raidxor_conf {
 	resource_t **resources;
 
 	unsigned int n_enc_temps, n_dec_temps;
+	char trap1;
 	encoding_t **enc_temps;
+	char trap2;
 	decoding_t **dec_temps;
+	char trap3;
 
 	unsigned int n_units, n_data_units;
 	disk_info_t units[0];
@@ -430,6 +442,7 @@ struct raidxor_bio {
 	printk(CHECK_LEVEL "raidxor: %s:%i:%i\n", __FILE__, __LINE__, smp_processor_id())
 #define CHECK_FUN(fun) \
 	printk(CHECK_LEVEL "raidxor: %s:%i:%i: %s\n", __FILE__, __LINE__, smp_processor_id(), #fun)
+#define CHECK_FUN(fun)
 #define CHECK_MAP \
 	printk(CHECK_LEVEL "raidxor: %s:%i:%i: kmap\n", __FILE__, __LINE__, smp_processor_id());
 #define CHECK_MALLOC \

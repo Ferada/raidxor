@@ -1,5 +1,18 @@
 /* -*- mode: c; coding: utf-8; c-file-style: "K&R"; tab-width: 8; indent-tabs-mode: t; -*- */
 
+/**
+ * raidxor_fill_page() - fills page with a value
+ *
+ * Copies value length times into the page buffer.
+ */
+static void raidxor_fill_page(struct page *page, unsigned char value,
+			      unsigned long length)
+{
+	unsigned char *data = kmap(page);
+	memset(data, value, length);
+	kunmap(page);
+}
+
 static const char * raidxor_cache_line_status(cache_line_t *line)
 {
 	CHECK_ARG_RET_NULL(line);
@@ -124,6 +137,36 @@ static struct bio * raidxor_find_bio(raidxor_bio_t *rxbio, disk_info_t *unit)
 	return NULL;
 }
 
+static int raidxor_find_enc_temps(raidxor_conf_t *conf, encoding_t *temp)
+{
+#undef CHECK_RETURN_VALUE
+#define CHECK_RETURN_VALUE 0
+	unsigned int i;
+
+	CHECK_ARG_RET_VAL(conf);
+	CHECK_ARG_RET_VAL(temp);
+
+	for (i = 0; i < conf->n_enc_temps; ++i)
+		if (conf->enc_temps[i] == temp)
+			return i;
+	return 0;
+}
+
+static int raidxor_find_dec_temps(raidxor_conf_t *conf, decoding_t *temp)
+{
+#undef CHECK_RETURN_VALUE
+#define CHECK_RETURN_VALUE 0
+	unsigned int i;
+
+	CHECK_ARG_RET_VAL(conf);
+	CHECK_ARG_RET_VAL(temp);
+
+	for (i = 0; i < conf->n_dec_temps; ++i)
+		if (conf->dec_temps[i] == temp)
+			return i;
+	return 0;
+}
+
 static disk_info_t * raidxor_find_unit_conf_rdev(raidxor_conf_t *conf,
 						 mdk_rdev_t *rdev)
 {
@@ -147,7 +190,7 @@ static disk_info_t * raidxor_find_unit_decoding(decoding_t *decoding,
 	CHECK_ARG_RET_NULL(unit);
 
 	for (i = 0; i < decoding->n_units; ++i)
-		if (decoding->units[i]->disk == unit)
+		if (decoding->units[i].disk == unit)
 			return unit;
 
 	return NULL;
@@ -248,7 +291,10 @@ static void raidxor_cache_line_free_temps(cache_t *cache, unsigned int line)
 	CHECK_ARG_RET(cache);
 	CHECK_PLAIN_RET(line < cache->n_lines);
 
-	for (i = 0; i < min(cache->conf->n_enc_temps, cache->conf->n_dec_temps) * cache->n_chunk_mult; ++i) {
+	if (!cache->lines[line]->temp_buffers)
+		return;
+
+	for (i = 0; i < max(cache->conf->n_enc_temps, cache->conf->n_dec_temps) * cache->n_chunk_mult; ++i) {
 		safe_put_page(cache->lines[line]->temp_buffers[i]);
 		cache->lines[line]->temp_buffers[i] = NULL;
 	}
@@ -336,27 +382,31 @@ out_free_lines:
 
 static int raidxor_cache_line_ensure_temps(cache_t *cache, unsigned int line)
 {
+#undef CHECK_JUMP_LABEL
+#define CHECK_JUMP_LABEL out
 	unsigned int i;
-	unsigned int to = min(cache->conf->n_enc_temps,
+	unsigned int to = max(cache->conf->n_enc_temps,
 			      cache->conf->n_dec_temps) *
 		cache->n_chunk_mult;
 
-	CHECK_ARG_RET(cache);
-	CHECK_PLAIN_RET(line < cache->n_lines);
+	CHECK_ARG(cache);
+	CHECK_PLAIN(line < cache->n_lines);
 
 	if (cache->lines[line]->temp_buffers)
 		return 0;
 
-	cache->lines[line]->temp_buffers = kmalloc(sizeof(struct page *) * to,
+	cache->lines[line]->temp_buffers = kzalloc(sizeof(struct page *) * to,
 						   GFP_NOIO);
 	if (!cache->lines[line]->temp_buffers)
 		goto out;
 
 	for (i = 0; i < to; ++i) {
 		if (!(cache->lines[line]->temp_buffers[i] = alloc_page(GFP_NOIO))) {
-			printk(KERN_EMERG "page allocation failed for line %u\n", line);
+			printk(KERN_INFO "page allocation failed for line %u\n", line);
 			goto out_free_pages;
 		}
+
+		raidxor_fill_page(cache->lines[line]->temp_buffers[i], 0, PAGE_SIZE);
 	}
 
 	return 0;
@@ -364,21 +414,6 @@ out_free_pages:
 	raidxor_cache_line_free_temps(cache, line);
 out:
 	return 1;
-}
-
-static int raidxor_cache_ensure_temps(cache_t *cache)
-{
-	unsigned int i;
-
-	CHECK_ARG_RET(cache);
-	
-	for (i = 0; i < cache->n_lines; ++i)
-		if (raidxor_cache_line_ensure_temps(cache, i))
-			goto out_free_pages;
-
-	return 0;
-out_free_pages:
-	raidxor_cache_free_temps(cache);
 }
 
 static void raidxor_free_cache(cache_t *cache)
@@ -421,14 +456,18 @@ static void raidxor_safe_free_encoding(disk_info_t *unit)
 
 static int raidxor_alloc_enc_temps(raidxor_conf_t *conf)
 {
+#undef CHECK_JUMP_LABEL
+#define CHECK_JUMP_LABEL out
 	unsigned int i;
 
-	CHECK_ARG_RET(conf);
+	CHECK_FUN(raidxor_alloc_enc_temps);
+
+	CHECK_ARG(conf);
 
 	if (conf->enc_temps)
 		return 0;
 
-	conf->enc_temps = kmalloc(sizeof(encoding_t *) * conf->n_enc_temps,
+	conf->enc_temps = kzalloc(sizeof(encoding_t *) * conf->n_enc_temps,
 				  GFP_NOIO);
 	if (!conf->enc_temps)
 		goto out;
@@ -440,17 +479,20 @@ out:
 
 static int raidxor_alloc_dec_temps(raidxor_conf_t *conf)
 {
+#undef CHECK_JUMP_LABEL
+#define CHECK_JUMP_LABEL out
 	unsigned int i;
 
-	CHECK_ARG_RET(conf);
+	CHECK_FUN(raidxor_alloc_dec_temps);
+
+	CHECK_ARG(conf);
 
 	if (conf->dec_temps)
 		return 0;
 
-	conf->dec_temps = kmalloc(sizeof(decoding_t *) * conf->n_dec_temps,
+	conf->dec_temps = kzalloc(sizeof(decoding_t *) * conf->n_dec_temps,
 				  GFP_NOIO);
-	if (!conf->dec_temps)
-		goto out;
+	CHECK_PLAIN(conf->dec_temps);
 
 	return 0;
 out:
@@ -492,7 +534,9 @@ static void raidxor_safe_free_dec_temps(raidxor_conf_t *conf)
 static int raidxor_ensure_enc_temps(raidxor_conf_t *conf,
 				    unsigned int ntemps)
 {
-	CHECK_ARG_RET(conf);
+#undef CHECK_RETURN_VALUE
+#define CHECK_RETURN_VALUE 1
+	CHECK_ARG_RET_VAL(conf);
 
 	if (ntemps == conf->n_enc_temps)
 		return 0;
@@ -510,7 +554,9 @@ static int raidxor_ensure_enc_temps(raidxor_conf_t *conf,
 static int raidxor_ensure_dec_temps(raidxor_conf_t *conf,
 				    unsigned int ntemps)
 {
-	CHECK_ARG_RET(conf);
+#undef CHECK_RETURN_VALUE
+#define CHECK_RETURN_VALUE 1
+	CHECK_ARG_RET_VAL(conf);
 
 	if (ntemps == conf->n_dec_temps)
 		return 0;
@@ -524,6 +570,38 @@ static int raidxor_ensure_dec_temps(raidxor_conf_t *conf,
 
 	return raidxor_alloc_dec_temps(conf);
 }
+
+static int raidxor_cache_ensure_temps(raidxor_conf_t *conf, unsigned int n_enc_temps, unsigned n_dec_temps)
+{
+#undef CHECK_JUMP_LABEL
+#define CHECK_JUMP_LABEL out
+	unsigned int i;
+
+	CHECK_ARG(conf);
+
+	if (n_enc_temps == conf->n_enc_temps &&
+	    n_dec_temps == conf->n_dec_temps)
+		return 0;
+
+	raidxor_ensure_dec_temps(conf, n_dec_temps);
+	raidxor_ensure_enc_temps(conf, n_enc_temps);
+
+	if (!conf->cache)
+		return 0;
+
+	raidxor_cache_free_temps(conf->cache);
+
+	for (i = 0; i < conf->cache->n_lines; ++i)
+		if (raidxor_cache_line_ensure_temps(conf->cache, i))
+			goto out_free_pages;
+
+	return 0;
+out_free_pages:
+	raidxor_cache_free_temps(conf->cache);
+out:
+	return 1;
+}
+
 
 /**
  * raidxor_safe_free_conf() - frees resource information
@@ -549,6 +627,13 @@ static void raidxor_safe_free_conf(raidxor_conf_t *conf)
 		raidxor_free_cache(conf->cache);
 		conf->cache = NULL;
 	}
+}
+
+static void raidxor_complete_free_conf(raidxor_conf_t *conf)
+{
+	unsigned int i;
+
+	CHECK_ARG_RET(conf);
 
 	raidxor_safe_free_enc_temps(conf);
 	raidxor_safe_free_dec_temps(conf);
@@ -647,7 +732,7 @@ static void raidxor_copy_bio_from_cache(cache_t *cache, unsigned int n_line,
 
 static void raidxor_copy_bio(struct bio *bioto, struct bio *biofrom)
 {
-	unsigned long i;
+	unsigned int i;
 	unsigned char *tomapped, *frommapped;
 	unsigned char *toptr, *fromptr;
 	struct bio_vec *bvto, *bvfrom;
@@ -669,6 +754,60 @@ static void raidxor_copy_bio(struct bio *bioto, struct bio *biofrom)
 	}
 }
 
+static void raidxor_copy_pages_to_bio(struct bio *bioto, struct page **pages)
+{
+	unsigned int i;
+	unsigned char *tomapped, *frommapped;
+	struct bio_vec *bvto;
+
+	for (i = 0; i < bioto->bi_vcnt; ++i) {
+		bvto = bio_iovec_idx(bioto, i);
+
+		tomapped = (unsigned char *) kmap(bvto->bv_page) + bvto->bv_offset;
+		frommapped = (unsigned char *) kmap(pages[i]);
+
+		memmove(tomapped, frommapped, bvto->bv_len);
+
+		kunmap(pages[i]);
+		kunmap(bvto->bv_page);
+	}
+}
+
+static void raidxor_copy_bio_to_pages(struct page **pages, struct bio *biofrom)
+{
+	unsigned int i;
+	unsigned char *tomapped, *frommapped;
+	struct bio_vec *bvfrom;
+
+	for (i = 0; i < biofrom->bi_vcnt; ++i) {
+		bvfrom = bio_iovec_idx(biofrom, i);
+
+		tomapped = (unsigned char *) kmap(pages[i]);
+		frommapped = (unsigned char *) kmap(bvfrom->bv_page) + bvfrom->bv_offset;
+
+		memmove(tomapped, frommapped, bvfrom->bv_len);
+
+		kunmap(pages[i]);
+		kunmap(bvfrom->bv_page);
+	}
+}
+
+static void raidxor_copy_pages(unsigned int length, struct page **to, struct page **from)
+{
+	unsigned int i;
+	unsigned char *tomapped, *frommapped;
+
+	for (i = 0; i < length; ++i) {
+		tomapped = (unsigned char *) kmap(to[i]);
+		frommapped = (unsigned char *) kmap(from[i]);
+
+		memmove(tomapped, frommapped, PAGE_SIZE);
+
+		kunmap(from[i]);
+		kunmap(to[i]);
+	}
+}
+
 /**
  * raidxor_cache_find_line() - finds a matching or otherwise available line
  *
@@ -677,10 +816,10 @@ static void raidxor_copy_bio(struct bio *bioto, struct bio *biofrom)
 static int raidxor_cache_find_line(cache_t *cache, sector_t sector,
 				   unsigned int *line)
 {
-	unsigned int i;
-
 #undef CHECK_RETURN_VALUE
 #define CHECK_RETURN_VALUE 0
+	unsigned int i;
+
 	CHECK_ARG_RET_VAL(cache);
 
 	/* find an exact match */
@@ -709,11 +848,11 @@ static int raidxor_cache_find_line(cache_t *cache, sector_t sector,
 
 static unsigned int raidxor_cache_empty_lines(cache_t *cache)
 {
+#undef CHECK_RETURN_VALUE
+#define CHECK_RETURN_VALUE 0
 	unsigned int i;
 	unsigned result = 0;
 
-#undef CHECK_RETURN_VALUE
-#define CHECK_RETURN_VALUE 0
 	CHECK_ARG_RET_VAL(cache);
 
 	for (i = 0; i < cache->n_lines; ++i)
@@ -733,10 +872,7 @@ static unsigned int raidxor_cache_empty_lines(cache_t *cache)
 static void raidxor_wakeup_thread(raidxor_conf_t *conf)
 {
 	CHECK_ARG_RET(conf);
-#ifdef RAIDXOR_DEBUG
-	if (spin_is_locked(&conf->device_lock))
-		CHECK_BUG("spin is locked");
-#endif
+
 	md_wakeup_thread(conf->mddev->thread);
 }
 
@@ -776,15 +912,15 @@ static void raidxor_wait_for_no_active_lines(raidxor_conf_t *conf, unsigned long
 	CHECK_ARG_RET(conf);
 
 	#ifdef RAIDXOR_DEBUG
-	printk(KERN_EMERG "active_lines = %d\n", conf->cache->active_lines);
-	printk(KERN_EMERG "WAITING\n");
+	printk(KERN_INFO "active_lines = %d\n", conf->cache->active_lines);
+	printk(KERN_INFO "WAITING\n");
 	#endif
 
 	wait_event_lock_irqsave(conf->cache->wait_for_line,
 				conf->cache->active_lines == 0,
 				conf->device_lock, *flags, /* nothing */);
 	#ifdef RAIDXOR_DEBUG
-	printk(KERN_EMERG "WAITING DONE\n");
+	printk(KERN_INFO "WAITING DONE\n");
 	#endif
 }
 
@@ -805,7 +941,7 @@ static void raidxor_wait_for_empty_line(raidxor_conf_t *conf, unsigned long *fla
 	raidxor_wakeup_thread(conf);
 
 	#ifdef RAIDXOR_DEBUG
-	printk(KERN_EMERG "WAITING\n");
+	printk(KERN_INFO "WAITING\n");
 	#endif
 
 	wait_event_lock_irqsave(conf->cache->wait_for_line,
@@ -813,14 +949,14 @@ static void raidxor_wait_for_empty_line(raidxor_conf_t *conf, unsigned long *fla
 				test_bit(CONF_STOPPING, &conf->flags),
 				conf->device_lock, *flags,
 #ifdef RAIDXOR_DEBUG
-				printk(KERN_EMERG "wait condition still not matched: %d, still waiting %d\n",
+				printk(KERN_INFO "wait condition still not matched: %d, still waiting %d\n",
 				       raidxor_cache_empty_lines(conf->cache),
 				       conf->cache->n_waiting)
 #endif
 );
 
 	#ifdef RAIDXOR_DEBUG
-	printk(KERN_EMERG "WAITING DONE\n");
+	printk(KERN_INFO "WAITING DONE\n");
 	#endif
 	--conf->cache->n_waiting;
 }
@@ -834,10 +970,10 @@ static void raidxor_wait_for_writeback(raidxor_conf_t *conf, unsigned long *flag
 	raidxor_wakeup_thread(conf);
 
 #ifdef RAIDXOR_DEBUG
-	printk(KERN_EMERG "active_lines = %d, n_waiting = %d\n",
+	printk(KERN_INFO "active_lines = %d, n_waiting = %d\n",
 	       conf->cache->active_lines,
 	       conf->cache->n_waiting);
-	printk(KERN_EMERG "WAITING\n");
+	printk(KERN_INFO "WAITING\n");
 #endif
 
 	wait_event_lock_irqsave(conf->cache->wait_for_line,
@@ -846,7 +982,7 @@ static void raidxor_wait_for_writeback(raidxor_conf_t *conf, unsigned long *flag
 				 conf->cache->n_waiting == 0),
 				conf->device_lock, *flags, /* nothing */);
 #ifdef RAIDXOR_DEBUG
-	printk(KERN_EMERG "WAITING DONE\n");
+	printk(KERN_INFO "WAITING DONE\n");
 #endif
 }
 
