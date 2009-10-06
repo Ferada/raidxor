@@ -244,7 +244,7 @@ def handle_temp (line, match):
     global units
     (name, dec) = match.groups ()
 
-    unit = find_unit (name)
+    unit = find_unit_or_temporary (name)
     if unit.encoding:
         sys.stderr.write ("overwriting temporary for %s\n" % unit.name)
     unit.encoding = convert_units (parse_units (dec))
@@ -416,7 +416,7 @@ def generate_decoding_shell_script (out):
         out.write ("' > tmp && cat tmp > /sys/block/%s/md/decoding\n" % (block_name (raid_device)))
 
     for i in range (0, len (tmpunits)):
-        if not tmpunits[i].faulty:
+        if tmpunits[i].redundant or not tmpunits[i].faulty:
             continue
         print tmpunits[i]
         out.write ("""echo -en '\\0%s\\0%s\\00\\0%s""" % (oct (len (temps)), oct (i), oct (len (tmpunits[i].decoding))))

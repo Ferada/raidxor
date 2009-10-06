@@ -167,6 +167,7 @@ static unsigned int raidxor_valid_decoding(cache_t *cache, unsigned int n_line)
 
 	for (i = 0; i < conf->n_units; ++i)
 		if (test_bit(Faulty, &conf->units[i].rdev->flags) &&
+		    !conf->units[i].redundant &&
 		    !conf->units[i].decoding)
 			return 0;
 
@@ -805,11 +806,20 @@ static void raidxor_cache_recover(cache_t *cache, unsigned int n_line)
 
 	/* decoding using direct style */
 	for (i = 0; i < rxbio->n_bios; ++i) {
-		if (test_bit(Faulty, &conf->units[i].rdev->flags) &&
-		    raidxor_xor_combine_decode(cache, n_line,
-					       rxbio->bios[i], rxbio,
-					       conf->units[i].decoding))
-			goto out_free_rxbio;
+		if (test_bit(Faulty, &conf->units[i].rdev->flags)) {
+			if (conf->units[i].redundant) {
+				if (raidxor_xor_combine_encode(cache, n_line,
+							       rxbio->bios[i], rxbio,
+							       conf->units[i].encoding))
+					goto out_free_rxbio;
+			}
+			else {
+				if (raidxor_xor_combine_decode(cache, n_line,
+							       rxbio->bios[i], rxbio,
+							       conf->units[i].decoding))
+					goto out_free_rxbio;
+			}
+		}
 	}
 
 	WITHLOCKCONF(conf, flags, {
