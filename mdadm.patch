@@ -1,0 +1,33 @@
+diff -u mdadm-2.6.8/Create.c mdadm-2.6.8-new/Create.c
+--- mdadm-2.6.8/Create.c	2008-11-28 01:27:16.000000000 +0100
++++ mdadm-2.6.8-new/Create.c	2009-05-10 17:42:03.000000000 +0200
+@@ -173,6 +173,7 @@
+ 	case 6:
+ 	case 0:
+ 	case LEVEL_LINEAR: /* linear */
++	case LEVEL_XOR:
+ 		if (chunk == 0) {
+ 			chunk = 64;
+ 			if (verbose > 0)
+diff -u mdadm-2.6.8/mdadm.h mdadm-2.6.8-new/mdadm.h
+--- mdadm-2.6.8/mdadm.h	2008-11-28 01:32:11.000000000 +0100
++++ mdadm-2.6.8-new/mdadm.h	2009-03-29 01:59:50.000000000 +0100
+@@ -532,6 +532,7 @@
+ #define	LEVEL_MULTIPATH		(-4)
+ #define	LEVEL_LINEAR		(-1)
+ #define	LEVEL_FAULTY		(-5)
++#define LEVEL_XOR		(-10)
+ 
+ 
+ /* faulty stuff */
+diff -u mdadm-2.6.8/ReadMe.c mdadm-2.6.8-new/ReadMe.c
+--- mdadm-2.6.8/ReadMe.c	2008-11-28 01:43:36.000000000 +0100
++++ mdadm-2.6.8-new/ReadMe.c	2009-03-29 03:00:45.000000000 +0200
+@@ -612,6 +612,7 @@
+ 	{ "raid10", 10},
+ 	{ "10", 10},
+ 	{ "faulty", LEVEL_FAULTY},
++	{ "xor", LEVEL_XOR},
+ 	{ NULL, 0}
+ };
+ 
