@@ -291,11 +291,8 @@ struct raidxor_conf {
 	resource_t **resources;
 
 	unsigned int n_enc_temps, n_dec_temps;
-	char trap1;
 	encoding_t **enc_temps;
-	char trap2;
 	decoding_t **dec_temps;
-	char trap3;
 
 	unsigned int n_units, n_data_units;
 	disk_info_t units[0];

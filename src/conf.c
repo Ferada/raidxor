@@ -85,7 +85,6 @@ static void raidxor_try_configure_raid(raidxor_conf_t *conf) {
 	if (!conf->cache)
 		goto out_free_resources;
 	conf->cache->conf = conf;
-	conf->trap1 = conf->trap2 = conf->trap3 = 42;
 
 	/* now a request is between 4096 and N_DATA_UNITS * CHUNK_SIZE bytes long */
 	printk(KERN_INFO "and max sectors to %lu\n",
