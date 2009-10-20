@@ -82,10 +82,6 @@ static int raidxor_cache_make_ready(cache_t *cache, unsigned int n_line)
 	}
 
 	if (line->status != CACHE_LINE_CLEAN) {
-#ifdef RAIDXOR_DEBUG
-		printk(KERN_INFO "line status was %s, not CACHE_LINE_CLEAN\n",
-		       raidxor_cache_line_status(line));
-#endif
 		UNLOCKCONF(conf, flags);
 		return 1;
 	}
@@ -102,9 +98,6 @@ static int raidxor_cache_make_ready(cache_t *cache, unsigned int n_line)
 	for (i = 0; i < (cache->n_buffers + cache->n_red_buffers) * cache->n_chunk_mult; ++i) {
 		/* printk(KERN_EMERG "line->buffers[%u] at %p, before %p\n", i, &line->buffers[i], line->buffers[i]); */
 		if (!(line->buffers[i] = alloc_page(GFP_NOIO))) {
-#ifdef RAIDXOR_DEBUG
-			printk(KERN_INFO "page allocation failed for line %u\n", n_line);
-#endif
 			goto out_free_pages;
 		}
 		/* printk(KERN_EMERG "line->buffers[%u] is now %p\n", i, line->buffers[i]); */
@@ -651,7 +644,6 @@ static int raidxor_xor_combine(cache_t *cache, unsigned int n_line,
 #undef CHECK_JUMP_LABEL
 #define CHECK_JUMP_LABEL out
 	unsigned int i, j, k, index;
-	unsigned int err __attribute__((unused));
 	struct bio *biofrom;
 	struct bio_vec *bvto;
 	unsigned char *tomapped;
@@ -916,43 +908,19 @@ static void raidxor_finish_lines(cache_t *cache)
 	for (i = 0; i < cache->n_lines && freed < cache->n_waiting; ++i) {
 		line = cache->lines[i];
 		switch (line->status) {
-		case CACHE_LINE_READY:
-#ifdef RAIDXOR_DEBUG
-			if (line->waiting)
-				printk(KERN_INFO "line %u with state READY has waiting in finish_lines\n", i);
-			else
-				printk(KERN_INFO "line %u with state READY has no waiting in finish_lines\n", i);
-#endif
-			/* can only happen if we stop the raid */
-			break;
 		case CACHE_LINE_CLEAN:
-			if (line->waiting) {
-#ifdef RAIDXOR_DEBUG
-				printk(KERN_INFO "line %u with STATE CLEAN has waiting in finish_lines\n", i);
-#endif
-				break;
-			}
-			++freed;
+			if (!line->waiting) ++freed;
+		case CACHE_LINE_READY:
 			break;
 		case CACHE_LINE_UPTODATE:
-			if (line->waiting) {
-#ifdef RAIDXOR_DEBUG
-				printk(KERN_INFO "line %u with STATE UPTODATE has waiting in finish_lines\n", i);
-#endif
-				break;
-			}
+			if (line->waiting) break;
 			UNLOCKCONF(cache->conf, flags);
 			raidxor_cache_make_ready(cache, i);
 			LOCKCONF(cache->conf, flags);
 			++freed;
 			break;
 		case CACHE_LINE_DIRTY:
-			if (line->waiting) {
-#ifdef RAIDXOR_DEBUG
-				printk(KERN_INFO "line %u with STATE DIRTY has waiting in finish_lines\n", i);
-#endif
-				break;
-			}
+			if (line->waiting) break;
 			/* when the callback is invoked, the main thread is
 			   woken up and eventually revisits this entry  */
 			UNLOCKCONF(cache->conf, flags);
@@ -1155,9 +1123,7 @@ static void raidxord(mddev_t *mddev)
 		   and we free two lines afterwards, the waiting processes
 		   are notified and signal us back later on */
 
-		if (cache->n_waiting > 0) {
-			raidxor_finish_lines(cache);
-		}
+		if (cache->n_waiting > 0) raidxor_finish_lines(cache);
 	}
 
 #ifdef RAIDXOR_DEBUG
@@ -1211,7 +1177,7 @@ static int raidxor_run(mddev_t *mddev)
 		goto out_inval;
 	}
 
-	printk(KERN_ERR "raidxor: raid set %s active with %d disks\n",
+	printk(KERN_INFO "raidxor: raid set %s active with %d disks\n",
 	       mdname(mddev), mddev->raid_disks);
 
 	if (mddev->raid_disks < 1)
@@ -1246,7 +1212,7 @@ static int raidxor_run(mddev_t *mddev)
 	rdev_for_each(rdev, tmp, mddev) {
 		size = min(size, rdev->size);
 
-		printk(KERN_ERR "raidxor: device %lu rdev %s, %llu blocks\n",
+		printk(KERN_INFO "raidxor: device %lu rdev %s, %llu blocks\n",
 		       i, bdevname(rdev->bdev, buffer),
 		       (unsigned long long) rdev->size * 2);
 		conf->units[i].rdev = rdev;
