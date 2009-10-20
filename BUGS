@@ -1,0 +1,2 @@
+A chunk size greater or equal to 64k (mdadm -c 64) causes a bug at
+drivers/xen/blkfront/blkfront.c:635.

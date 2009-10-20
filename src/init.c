@@ -29,7 +29,7 @@ static void __exit raidxor_exit(void)
 }
 
 MODULE_AUTHOR("Olof-Joachim Frahm");
-MODULE_LICENSE("GPL");
+MODULE_LICENSE("GPL v2");
 MODULE_SUPPORTED_DEVICE("md");
 MODULE_DESCRIPTION("Raid module with parameterisation support for en- and decoding.");
 
