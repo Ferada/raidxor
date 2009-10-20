@@ -1419,12 +1419,15 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 		raidxor_wait_for_empty_line(conf, &flags);
 
 		if (test_bit(CONF_STOPPING, &conf->flags) ||
-		    test_bit(CONF_ERROR, &conf->flags))
+		    test_bit(CONF_ERROR, &conf->flags)) {
 			goto out_unlock;
+		}
 	}
 
-	if (!raidxor_cache_find_line(cache, aligned_sector, &line))
+	if (!raidxor_cache_find_line(cache, aligned_sector, &line)) {
+		printk(KERN_ERR "couldn't find available line\n");
 		goto out_unlock;
+	}
 
 	/* printk(KERN_EMERG "found available line %u\n", line); */
 
@@ -1433,18 +1436,18 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 	{
 		UNLOCKCONF(conf, flags);
 		if (raidxor_cache_make_ready(cache, line)) {
-			CHECK_BUG("raidxor_cache_make_ready failed mysteriously");
+			printk(KERN_ERR "raidxor_cache_make_ready failed mysteriously");
 			goto out;
 		}
 		LOCKCONF(conf, flags);
 
 		if (cache->lines[line]->status != CACHE_LINE_READY) {
-			CHECK_BUG("line status isn't CACHE_LINE_READY anymore");
+			printk(KERN_ERR "line status isn't CACHE_LINE_READY anymore");
 			goto out_unlock;
 		}
 
 		if (raidxor_cache_make_load_me(cache, line, aligned_sector)) {
-			CHECK_BUG("raidxor_cache_make_load_me failed mysteriously");
+			printk(KERN_ERR "raidxor_cache_make_load_me failed mysteriously");
 			goto out_unlock;
 		}
 	}
