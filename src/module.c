@@ -991,8 +991,6 @@ static void raidxor_handle_requests(cache_t *cache, unsigned int n_line)
 			raidxor_copy_bio_to_cache(cache, n_line, bio);
 		else raidxor_copy_bio_from_cache(cache, n_line, bio);
 
-		printk(KERN_EMERG "bio_endio at %s:%i:%i\n",
-		       __FILE__, __LINE__, smp_processor_id());
 		bio_endio(bio, 0);
 
 		LOCKCONF(cache->conf, flags);
