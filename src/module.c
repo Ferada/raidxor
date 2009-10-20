@@ -1412,6 +1412,7 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 		goto out_unlock;
 	}
 
+retry:
 	/* look for matching line or otherwise available */
 	if (!raidxor_cache_find_line(cache, aligned_sector, &line)) {
 		/* printk(KERN_EMERG "waiting for empty line\n"); */
@@ -1437,13 +1438,13 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 		UNLOCKCONF(conf, flags);
 		if (raidxor_cache_make_ready(cache, line)) {
 			printk(KERN_ERR "raidxor_cache_make_ready failed mysteriously");
-			goto out;
+			goto out_retry_lock;
 		}
 		LOCKCONF(conf, flags);
 
 		if (cache->lines[line]->status != CACHE_LINE_READY) {
 			printk(KERN_ERR "line status isn't CACHE_LINE_READY anymore");
-			goto out_unlock;
+			goto out_retry;
 		}
 
 		if (raidxor_cache_make_load_me(cache, line, aligned_sector)) {
@@ -1459,6 +1460,10 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 	raidxor_wakeup_thread(conf);
 
 	return 0;
+out_retry_lock:
+	LOCKCONF(conf, flags);
+out_retry:
+	goto retry;
 out_unlock: __attribute__((unused))
 	UNLOCKCONF(conf, flags);
 out: __attribute__((unused))
