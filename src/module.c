@@ -70,9 +70,6 @@ static int raidxor_cache_make_ready(cache_t *cache, unsigned int n_line)
 	line = cache->lines[n_line];
 	CHECK_PLAIN_RET_VAL(line);
 
-	/* printk(KERN_EMERG "line status was %s\n", raidxor_cache_line_status(line));
-	printk(KERN_EMERG "line at %p\n", line); */
-
 	WITHLOCKCONF(conf, flags, {
 
 	if (line->status == CACHE_LINE_READY || line->status == CACHE_LINE_UPTODATE) {
@@ -89,18 +86,12 @@ static int raidxor_cache_make_ready(cache_t *cache, unsigned int n_line)
 	line->status = CACHE_LINE_READYING;
 	});
 
-	/* printk(KERN_EMERG "cache->n_buffers == %u, cache->n_red_buffers == %u\n",
-	       cache->n_buffers, cache->n_red_buffers); */
-
 	if (raidxor_cache_line_ensure_temps(cache, n_line))
 		goto out_free_pages;
 
 	for (i = 0; i < (cache->n_buffers + cache->n_red_buffers) * cache->n_chunk_mult; ++i) {
-		/* printk(KERN_EMERG "line->buffers[%u] at %p, before %p\n", i, &line->buffers[i], line->buffers[i]); */
-		if (!(line->buffers[i] = alloc_page(GFP_NOIO))) {
+		if (!(line->buffers[i] = alloc_page(GFP_NOIO)))
 			goto out_free_pages;
-		}
-		/* printk(KERN_EMERG "line->buffers[%u] is now %p\n", i, line->buffers[i]); */
 	}
 
 	WITHLOCKCONF(conf, flags, {
@@ -303,14 +294,10 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n_line)
 	++cache->active_lines;
 	});
 
-	/* printk(KERN_EMERG "with %d bios\n", rxbio->n_bios); */
-
 	return 0;
 out_free_bio: __attribute__((unused))
 	raidxor_free_bio(rxbio);
 out: __attribute__((unused))
-	printk(KERN_EMERG "raidxor_cache_abort_requests at %s:%i:%i\n",
-	       __FILE__, __LINE__, smp_processor_id());
 	raidxor_cache_abort_requests(cache, n_line);
 	return 1;
 }
@@ -395,7 +382,6 @@ static int raidxor_cache_writeback_line(cache_t *cache, unsigned int n_line)
 	}
 
 	for (i = 0; i < conf->n_enc_temps; ++i) {
-		/* printk(KERN_EMERG "encoding temporary entry %u of %u at temp_buffers[%u]\n", i, conf->n_enc_temps, i * cache->n_chunk_mult); */
 		if (raidxor_xor_combine_encode_temporary(cache, n_line,
 							 &line->temp_buffers[i * cache->n_chunk_mult],
 							 rxbio,
@@ -670,7 +656,6 @@ static int raidxor_xor_combine(cache_t *cache, unsigned int n_line,
 			index = raidxor_find_enc_temps(cache->conf, units[0].encoding);
 		else
 			index = raidxor_find_dec_temps(cache->conf, units[0].decoding);
-		/* printk(KERN_EMERG "xor_combine: using 0 temporary entry %u, %u\n", index, index * cache->n_chunk_mult); */
 		temps = &cache->lines[n_line]->temp_buffers[index * cache->n_chunk_mult];
 		raidxor_copy_pages_to_bio(bioto, temps);
 	}
@@ -688,7 +673,6 @@ static int raidxor_xor_combine(cache_t *cache, unsigned int n_line,
 
 			for (k = i, nsrcs = 0; k < n_units && k < (i + nblocks); ++k, ++nsrcs) {
 				if (units[k].temporary) {
-					/* printk(KERN_EMERG "%d, disk %p, encoding %p, decoding %p\n", k, units[k].disk, units[k].encoding, units[k].decoding); */
 					if (encoding)
 						index = raidxor_find_enc_temps(cache->conf, units[k].encoding);
 					else
@@ -831,8 +815,6 @@ out_free_rxbio:
 	raidxor_free_bio(rxbio);
 	/* drop this line if an error occurs or we can't recover */
 
-	printk(KERN_EMERG "raidxor_cache_abort_requests at %s:%i:%i\n",
-	       __FILE__, __LINE__, smp_processor_id());
 	raidxor_cache_abort_requests(cache, n_line);
 
 	LOCKCONF(conf, flags);
@@ -945,8 +927,6 @@ static void raidxor_finish_lines(cache_t *cache)
 		}
 	}
 
-	/* printk(KERN_EMERG "freed %u lines\n", freed); */
-
 out: __attribute__((unused))
 	do {} while (0);
 
@@ -1050,9 +1030,6 @@ static int raidxor_handle_line(cache_t *cache, unsigned int n_line)
 		goto break_unlocked;
 	case CACHE_LINE_UPTODATE:
 	case CACHE_LINE_DIRTY:
-		/* printk(KERN_EMERG "line %d still had %d requests\n",
-		       n_line,
-		       raidxor_cache_line_length_requests(cache, n_line)); */
 		UNLOCKCONF(cache->conf, flags);
 		raidxor_handle_requests(cache, n_line);
 		done = 1;
@@ -1130,11 +1107,6 @@ static void raidxord(mddev_t *mddev)
 		if (cache->n_waiting > 0) raidxor_finish_lines(cache);
 	}
 
-#ifdef RAIDXOR_DEBUG
-	WITHLOCKCONF(conf, flags, {
-//	raidxor_cache_print_status(cache);
-	});
-#endif
 	pr_debug("raidxor: thread inactive, %u lines handled\n", handled);
 }
 
