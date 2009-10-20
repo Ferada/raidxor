@@ -1364,8 +1364,6 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 	cache = conf->cache;
 	CHECK_PLAIN(cache);
 
-	/* printk(KERN_EMERG "raidxor: got request\n"); */
-
 	WITHLOCKCONF(conf, flags, {
 #undef CHECK_JUMP_LABEL
 #define CHECK_JUMP_LABEL out_unlock
@@ -1403,7 +1401,6 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 	CHECK_PLAIN(mod == 0);
 
 	if (bio->bi_sector + (bio->bi_size >> 9) > strip_sectors) {
-		/* TODO: split bio */
 		printk(KERN_ERR "need to split request because "
 		       "%llu > %llu\n",
 		       (unsigned long long) (bio->bi_sector +
@@ -1415,8 +1412,6 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 retry:
 	/* look for matching line or otherwise available */
 	if (!raidxor_cache_find_line(cache, aligned_sector, &line)) {
-		/* printk(KERN_EMERG "waiting for empty line\n"); */
-
 		raidxor_wait_for_empty_line(conf, &flags);
 
 		if (test_bit(CONF_STOPPING, &conf->flags) ||
@@ -1430,22 +1425,16 @@ retry:
 		goto out_unlock;
 	}
 
-	/* printk(KERN_EMERG "found available line %u\n", line); */
-
 	if (cache->lines[line]->status == CACHE_LINE_CLEAN ||
 	    cache->lines[line]->status == CACHE_LINE_READY)
 	{
 		UNLOCKCONF(conf, flags);
-		if (raidxor_cache_make_ready(cache, line)) {
-			printk(KERN_ERR "raidxor_cache_make_ready failed mysteriously\n");
+		if (raidxor_cache_make_ready(cache, line))
 			goto out_retry_lock;
-		}
 		LOCKCONF(conf, flags);
 
-		if (cache->lines[line]->status != CACHE_LINE_READY) {
-			printk(KERN_ERR "line status isn't CACHE_LINE_READY anymore\n");
+		if (cache->lines[line]->status != CACHE_LINE_READY)
 			goto out_retry;
-		}
 
 		if (raidxor_cache_make_load_me(cache, line, aligned_sector)) {
 			printk(KERN_ERR "raidxor_cache_make_load_me failed mysteriously\n");
@@ -1464,11 +1453,9 @@ out_retry_lock:
 	LOCKCONF(conf, flags);
 out_retry:
 	goto retry;
-out_unlock: __attribute__((unused))
+out_unlock:
 	UNLOCKCONF(conf, flags);
 out: __attribute__((unused))
-	printk(KERN_EMERG "bio_io_error at %s:%i:%i\n",
-	       __FILE__, __LINE__, smp_processor_id());
 	bio_io_error(bio);
 	return 0;
 }
