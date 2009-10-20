@@ -309,6 +309,8 @@ static int raidxor_cache_load_line(cache_t *cache, unsigned int n_line)
 out_free_bio: __attribute__((unused))
 	raidxor_free_bio(rxbio);
 out: __attribute__((unused))
+	printk(KERN_EMERG "raidxor_cache_abort_requests at %s:%i:%i\n",
+	       __FILE__, __LINE__, smp_processor_id());
 	raidxor_cache_abort_requests(cache, n_line);
 	return 1;
 }
@@ -829,6 +831,8 @@ out_free_rxbio:
 	raidxor_free_bio(rxbio);
 	/* drop this line if an error occurs or we can't recover */
 
+	printk(KERN_EMERG "raidxor_cache_abort_requests at %s:%i:%i\n",
+	       __FILE__, __LINE__, smp_processor_id());
 	raidxor_cache_abort_requests(cache, n_line);
 
 	LOCKCONF(conf, flags);
@@ -987,6 +991,8 @@ static void raidxor_handle_requests(cache_t *cache, unsigned int n_line)
 			raidxor_copy_bio_to_cache(cache, n_line, bio);
 		else raidxor_copy_bio_from_cache(cache, n_line, bio);
 
+		printk(KERN_EMERG "bio_endio at %s:%i:%i\n",
+		       __FILE__, __LINE__, smp_processor_id());
 		bio_endio(bio, 0);
 
 		LOCKCONF(cache->conf, flags);
@@ -1455,6 +1461,8 @@ static int raidxor_make_request(struct request_queue *q, struct bio *bio)
 out_unlock: __attribute__((unused))
 	UNLOCKCONF(conf, flags);
 out: __attribute__((unused))
+	printk(KERN_EMERG "bio_io_error at %s:%i:%i\n",
+	       __FILE__, __LINE__, smp_processor_id());
 	bio_io_error(bio);
 	return 0;
 }
