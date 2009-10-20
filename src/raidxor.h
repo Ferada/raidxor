@@ -190,6 +190,18 @@ struct disk_info {
 	resource_t *resource;
 };
 
+/**
+ * struct coding - helper union for coding information
+ * @temporary: either false/0 or true/1
+ * @disk: valid if temporary is false
+ * @encoding: depending on context, valid if temporary is true
+ * @decoding: depending on context, valid if temporary is true
+ *
+ * Basically making the compiler happy.  Depends on the used
+ * context, that is: some external flags decides whether encoding
+ * or decoding is the right choice (not that it matters for most
+ * platforms).
+ */
 struct coding {
 	unsigned int temporary;
 

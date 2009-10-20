@@ -1,6 +1,6 @@
 ifneq ($(KERNELRELEASE),)
 
-obj-m := test.o raidxor.o
+obj-m := raidxor.o
 
 raidxor-objs := module.o
 
