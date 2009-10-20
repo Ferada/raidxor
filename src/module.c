@@ -1437,18 +1437,18 @@ retry:
 	{
 		UNLOCKCONF(conf, flags);
 		if (raidxor_cache_make_ready(cache, line)) {
-			printk(KERN_ERR "raidxor_cache_make_ready failed mysteriously");
+			printk(KERN_ERR "raidxor_cache_make_ready failed mysteriously\n");
 			goto out_retry_lock;
 		}
 		LOCKCONF(conf, flags);
 
 		if (cache->lines[line]->status != CACHE_LINE_READY) {
-			printk(KERN_ERR "line status isn't CACHE_LINE_READY anymore");
+			printk(KERN_ERR "line status isn't CACHE_LINE_READY anymore\n");
 			goto out_retry;
 		}
 
 		if (raidxor_cache_make_load_me(cache, line, aligned_sector)) {
-			printk(KERN_ERR "raidxor_cache_make_load_me failed mysteriously");
+			printk(KERN_ERR "raidxor_cache_make_load_me failed mysteriously\n");
 			goto out_unlock;
 		}
 	}
