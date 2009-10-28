@@ -438,7 +438,7 @@ then
 	echo "tmp file exists, aborting"
 fi
 
-$MDADM --manage %s -S
+$MDADM --manage %s -e1.2 -S
 """ % (opts.mdadm, raid_device))
 
 def generate_start_shell_script (out):
@@ -456,7 +456,7 @@ then
 	echo "tmp file exists, aborting"
 fi
 
-$MDADM -v -v --create %s -R -c %s --level=xor \\
+$MDADM -v -v --create %s -e1.2 -R -c %s --level=xor \\
 	--raid-devices=%s%s
 if [[ ! $? -eq 0 ]]; then exit; fi
 
