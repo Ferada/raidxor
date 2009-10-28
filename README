@@ -8,5 +8,12 @@ variable de-/encoding using XOR equations.
 Ein Metamodul für den md-Treiber des Linux-Kernels das variable
 De-/Kodierung über XOR-Gleichungen unterstützt.
 
-License: GPLv3
+Not included is the tool for generating the equations/configuration
+files.  Some examples are in the data folder, but'll need the used tool
+(cauchyrs), or some other to generate them for other situations.
+
+The performance isn't extraordinary, but it works.  See BUGS for
+exceptions to that rule.
+
+License: GPLv2
 Author: Olof-Joachim Frahm <Olof.Frahm@web.de>
